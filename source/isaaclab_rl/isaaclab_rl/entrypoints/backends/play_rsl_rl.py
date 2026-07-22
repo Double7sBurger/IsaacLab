@@ -51,6 +51,12 @@ parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent f
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during play.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument(
+    "--video_folder",
+    type=str,
+    default=None,
+    help="Directory for recorded play videos. Defaults to <checkpoint directory>/videos/play.",
+)
+parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
@@ -139,7 +145,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         if args_cli.video:
             video_kwargs = {
-                "video_folder": os.path.join(log_dir, "videos", "play"),
+                "video_folder": (
+                    os.path.abspath(args_cli.video_folder)
+                    if args_cli.video_folder is not None
+                    else os.path.join(log_dir, "videos", "play")
+                ),
                 "step_trigger": lambda step: step == 0,
                 "video_length": args_cli.video_length,
                 "disable_logger": True,
