@@ -761,16 +761,22 @@ class NewtonVisualizer(BaseVisualizer):
         self._apply_camera_pose((eye_t, target_t))
 
     def render_rgb_array(self) -> np.ndarray:
-        """Return the latest RGB frame rendered by the Newton viewer.
+        """Return the latest RGB frame rendered by the Newton visualizer.
 
         Returns:
-            The latest viewer framebuffer as a uint8 array with shape ``(height, width, 3)``.
+            The tracked tiled-camera frame when configured, otherwise the latest
+            viewer framebuffer, as a uint8 array with shape ``(height, width, 3)``.
 
         Raises:
             RuntimeError: If the visualizer has not been initialized.
         """
         if self._viewer is None:
             raise RuntimeError("NewtonVisualizer must be initialized before capturing an RGB frame.")
+        if self._camera_sensor is not None and self._camera_is_owned:
+            self._update_owned_camera_poses()
+            self._camera_sensor.update(dt=0.0, force_recompute=True)
+            rgb = camera_rgb_batch(self._camera_sensor, self._camera_sensor_indices)
+            return rgb[0].detach().cpu().numpy()
         return self._viewer.get_frame().numpy()
 
     def supports_markers(self) -> bool:
