@@ -51,10 +51,22 @@ parser = argparse.ArgumentParser(description="Play a checkpoint of an RL agent f
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during play.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument(
+    "--num_steps",
+    type=int,
+    default=None,
+    help="Total policy/environment steps to run. Defaults to indefinitely, or --video_length when recording video.",
+)
+parser.add_argument(
     "--video_folder",
     type=str,
     default=None,
     help="Directory for recorded play videos. Defaults to <checkpoint directory>/videos/play.",
+)
+parser.add_argument(
+    "--print_success_rate",
+    action="store_true",
+    default=False,
+    help="Print cumulative success rate during play. An episode succeeds by reaching its time limit.",
 )
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
@@ -78,6 +90,8 @@ args_cli, remaining_args = setup_preset_cli(parser)
 
 if args_cli.video:
     args_cli.enable_cameras = True
+if args_cli.num_steps is not None and args_cli.num_steps <= 0:
+    parser.error("--num_steps must be a positive integer.")
 
 
 # an external callback lets downstream code register its environments; it returns
@@ -200,19 +214,38 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
         obs = env.get_observations()
         timestep = 0
+        completed_episodes = 0
+        successful_episodes = 0
         try:
             while True:
                 start_time = time.time()
                 with torch.inference_mode():
                     actions = policy(obs)
                     obs, _, dones, _ = env.step(actions)
+                    if args_cli.print_success_rate:
+                        done_mask = dones.to(dtype=torch.bool)
+                        num_completed = int(done_mask.sum().item())
+                        if num_completed:
+                            # These flags are captured before the environment
+                            # automatically resets completed episodes.
+                            successful_episodes += int(
+                                (done_mask & env.unwrapped.reset_time_outs).sum().item()
+                            )
+                            completed_episodes += num_completed
+                            success_rate = successful_episodes / completed_episodes
+                            print(
+                                "[INFO] Success rate (survived to time-out): "
+                                f"{success_rate:.1%} ({successful_episodes}/{completed_episodes} episodes)"
+                            )
                     # reset recurrent states for episodes that have terminated
                     if version.parse(installed_version) >= version.parse("4.0.0"):
                         policy.reset(dones)
                     else:
                         policy_nn.reset(dones)
+                timestep += 1
+                if args_cli.num_steps is not None and timestep >= args_cli.num_steps:
+                    break
                 if args_cli.video:
-                    timestep += 1
                     if timestep == args_cli.video_length:
                         break
 
@@ -220,6 +253,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 if args_cli.real_time and sleep_time > 0:
                     time.sleep(sleep_time)
 
+            if args_cli.print_success_rate and completed_episodes == 0:
+                print("[INFO] Success rate unavailable: no episodes completed during play.")
             env.close()
         except KeyboardInterrupt:
             pass

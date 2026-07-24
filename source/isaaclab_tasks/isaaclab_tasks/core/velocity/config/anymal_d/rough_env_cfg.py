@@ -21,11 +21,12 @@ from isaaclab_assets.robots.anymal import ANYMAL_D_CFG  # isort: skip
 # ``Isaac-Velocity-Rough-AnymalD-JointDR``. Adjust these values to tune the
 # training distribution. Values are multiplicative scales around the USD
 # defaults, e.g. (0.85, 1.15) means ±15%.
-JOINT_DR_ARMATURE_SCALE_RANGE = (0.90, 1.10)
-JOINT_DR_STIFFNESS_SCALE_RANGE = (0.85, 1.15)
-JOINT_DR_DAMPING_SCALE_RANGE = (0.85, 1.15)
+JOINT_DR_ARMATURE_SCALE_RANGE = (0.85, 2.0)
+JOINT_DR_STIFFNESS_SCALE_RANGE = (0.85, 2.0)
+JOINT_DR_DAMPING_SCALE_RANGE = (0.85, 2.0)
 
 _ANYMAL_ACTUATED_JOINTS = SceneEntityCfg("robot", joint_names=[".*"], preserve_order=True)
+_COMPARE_TERRAIN_SEED = 42
 
 
 @configclass
@@ -139,6 +140,11 @@ class AnymalDRoughEnvCfg_PHYSX_ORDERED_COMPARE_PLAY(AnymalDRoughEnvCfg_PHYSX_ORD
         # Always use the first terrain level rather than randomly selecting a
         # terrain origin as the regular play configuration does.
         self.scene.terrain.max_init_terrain_level = 0
+        if self.scene.terrain.terrain_generator is not None:
+            # TerrainGeneratorCfg otherwise derives its seed from the current
+            # NumPy RNG state. Backend initialization can consume that state
+            # differently, yielding distinct static terrain meshes.
+            self.scene.terrain.terrain_generator.seed = _COMPARE_TERRAIN_SEED
 
         # Disable all startup randomization. In particular, PhysX supports COM
         # randomization while Newton disables it, which otherwise advances the
