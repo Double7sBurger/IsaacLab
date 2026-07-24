@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Capture PhysX policy states and compare their observations in Newton.
 
 Run this tool twice, from separate processes:
@@ -29,12 +34,13 @@ import torch
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 from isaaclab.app import add_launcher_args, launch_simulation
+
 from isaaclab_rl.entrypoints.backends import cli_args_rsl_rl as rsl_cli_args
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, handle_deprecated_rsl_rl_cfg
-from isaaclab_tasks.utils import setup_preset_cli
-from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import isaaclab_tasks  # noqa: F401
+from isaaclab_tasks.utils import setup_preset_cli
+from isaaclab_tasks.utils.hydra import hydra_task_config
 
 with contextlib.suppress(ImportError):
     import isaaclab_tasks_experimental  # noqa: F401
@@ -50,11 +56,15 @@ parser.add_argument(
     default=1,
     help="Number of environments to create (default: 1; use one for a deterministic state comparison).",
 )
-parser.add_argument("--env_id", type=int, default=0, help="Environment index to capture; use one environment for clearest output.")
+parser.add_argument(
+    "--env_id", type=int, default=0, help="Environment index to capture; use one environment for clearest output."
+)
 parser.add_argument("--asset_name", default="robot", help="Articulation whose state is transferred.")
 parser.add_argument("--task", type=str, required=True)
 parser.add_argument("--agent", type=str, default="rsl_rl_cfg_entry_point")
-parser.add_argument("--seed", type=int, default=None, help="Seed for deterministic terrain and environment initialization.")
+parser.add_argument(
+    "--seed", type=int, default=None, help="Seed for deterministic terrain and environment initialization."
+)
 parser.add_argument(
     "--summary_only",
     action="store_true",
@@ -114,8 +124,7 @@ def _select_env_state(value: object, env_id: int) -> object:
 
 def _capture_state(env, env_id: int) -> dict[str, object]:
     commands = {
-        name: _cpu(env.command_manager.get_term(name).command[env_id])
-        for name in env.command_manager.active_terms
+        name: _cpu(env.command_manager.get_term(name).command[env_id]) for name in env.command_manager.active_terms
     }
     return {
         # get_state/reset_to is backend-independent and includes dynamic scene
@@ -157,8 +166,7 @@ def _print_replay(step: int, reference: torch.Tensor, actual: torch.Tensor, refe
     print(f"\n[REPLAY step={step}] physx_policy_obs={_format(reference)}")
     print(f"[REPLAY step={step}] newton_policy_obs={_format(actual)}")
     print(
-        f"[REPLAY step={step}] abs_diff_max={diff.abs().max().item():.8g} "
-        f"abs_diff_mean={diff.abs().mean().item():.8g}"
+        f"[REPLAY step={step}] abs_diff_max={diff.abs().max().item():.8g} abs_diff_mean={diff.abs().mean().item():.8g}"
     )
     for name, value in actual_terms.items():
         term_diff = value[env_id].cpu() - reference_terms[name]
@@ -246,7 +254,10 @@ def main(env_cfg, agent_cfg):
                         print(f"[CAPTURE] Environment {args_cli.env_id} reset at step {step}; stopping capture.")
                         break
                 args_cli.snapshot.parent.mkdir(parents=True, exist_ok=True)
-                torch.save({"asset_name": args_cli.asset_name, "env_id": args_cli.env_id, "samples": snapshots}, args_cli.snapshot)
+                torch.save(
+                    {"asset_name": args_cli.asset_name, "env_id": args_cli.env_id, "samples": snapshots},
+                    args_cli.snapshot,
+                )
                 print(f"\nSaved {len(snapshots)} PhysX state/observation pairs to {args_cli.snapshot}")
             else:
                 data = torch.load(args_cli.snapshot, map_location="cpu", weights_only=True)

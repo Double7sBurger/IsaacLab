@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 """Compare PhysX and MJWarp articulation name ordering for an Isaac Lab task.
 
 Examples:
@@ -18,10 +23,10 @@ import gymnasium as gym
 
 from isaaclab.app import add_launcher_args, launch_simulation
 from isaaclab.assets import get_articulation_name_ordering
-from isaaclab_tasks.utils import setup_preset_cli
-from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import isaaclab_tasks  # noqa: F401
+from isaaclab_tasks.utils import setup_preset_cli
+from isaaclab_tasks.utils.hydra import hydra_task_config
 
 with contextlib.suppress(ImportError):
     import isaaclab_tasks_experimental  # noqa: F401
@@ -42,7 +47,9 @@ args_cli, remaining_args = setup_preset_cli(parser)
 sys.argv = [sys.argv[0]] + remaining_args
 
 
-def _print_ordering(kind: str, public_names: tuple[str, ...], physx_names: tuple[str, ...], mjwarp_names: tuple[str, ...]):
+def _print_ordering(
+    kind: str, public_names: tuple[str, ...], physx_names: tuple[str, ...], mjwarp_names: tuple[str, ...]
+):
     """Print an ordering comparison and the PhysX-to-MJWarp index permutation."""
     print(f"\n{kind.upper()} ORDERING")
     print(f"  public ({len(public_names)}): {list(public_names)}")

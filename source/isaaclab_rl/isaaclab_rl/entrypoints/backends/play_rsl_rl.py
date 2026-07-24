@@ -228,9 +228,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         if num_completed:
                             # These flags are captured before the environment
                             # automatically resets completed episodes.
-                            successful_episodes += int(
-                                (done_mask & env.unwrapped.reset_time_outs).sum().item()
-                            )
+                            successful_episodes += int((done_mask & env.unwrapped.reset_time_outs).sum().item())
                             completed_episodes += num_completed
                             success_rate = successful_episodes / completed_episodes
                             print(

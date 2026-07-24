@@ -4,13 +4,14 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 
-from isaaclab.utils.configclass import configclass
+from isaaclab_visualizers.newton import NewtonVisualizerCfg
+
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.configclass import configclass
 
-from isaaclab_tasks.core.velocity.velocity_env_cfg import LocomotionVelocityRoughEnvCfg
 import isaaclab_tasks.core.velocity.mdp as mdp
-from isaaclab_visualizers.newton import NewtonVisualizerCfg
+from isaaclab_tasks.core.velocity.velocity_env_cfg import LocomotionVelocityRoughEnvCfg
 
 ##
 # Pre-defined configs
