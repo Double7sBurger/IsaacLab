@@ -1,0 +1,19 @@
+# Reproduces:
+# ./isaaclab.sh -p scripts/reinforcement_learning/train.py \
+#   --task=Isaac-Velocity-Rough-AnymalD-JointDR \
+#   --rl_library=rsl_rl --num_envs=4096 --headless --max_iterations=2000
+#
+# The original command inherits seed=42 and PhysX from the registered task and
+# agent configs. They are explicit here so the profile does not depend on those
+# defaults remaining unchanged.
+
+arguments:
+  task: Isaac-Velocity-Rough-AnymalD-JointDR
+  rl_library: rsl_rl
+  num_envs: 4096
+  headless: true
+  max_iterations: 2000
+  seed: 42
+
+presets:
+  physics: physx

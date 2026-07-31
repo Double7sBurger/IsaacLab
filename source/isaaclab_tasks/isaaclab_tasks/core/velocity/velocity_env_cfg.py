@@ -62,10 +62,11 @@ class RoughPhysicsCfg(PresetCfg):
         collision_cfg=NewtonCollisionPipelineCfg(max_triangle_pairs=2_500_000),
         num_substeps=1,
         debug_mode=False,
-        # 1 cm shape margin is the single most important Newton setting for rough
-        # terrain — without it, non-AnymalD robots fail to learn stable contact
-        # on triangle-mesh terrain. See isaaclab_newton 0.5.22 changelog.
-        default_shape_cfg=NewtonShapeCfg(margin=0.01),
+        # Shape margin helps rough-terrain contact on triangle meshes. 5 mm is a
+        # compromise vs the previous 1 cm default, which inflated self-collisions
+        # (e.g. base ↔ thigh) enough to falsely trip base_contact on Newton.
+        # See isaaclab_newton 0.5.22 changelog.
+        default_shape_cfg=NewtonShapeCfg(margin=0),
     )
     physx = default
     ovphysx = OvPhysxCfg()

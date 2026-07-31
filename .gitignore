@@ -85,3 +85,8 @@ _build
 
 # Superpowers (Claude Code plugin artifacts)
 docs/superpowers/
+
+# Local sim2sim evaluation tooling (not for upstream)
+tools/eval_tools/
+# Kit UI layout cache
+imgui.ini

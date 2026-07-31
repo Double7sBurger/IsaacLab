@@ -101,6 +101,10 @@ class AppLauncher:
         Also used when Kit is skipped (see :mod:`isaaclab.app.sim_launcher`).
         """
         visualizers = launcher_args.get("visualizer")
+        # Callers sometimes pass a single string (e.g. "none" / "kit"). Normalize to a
+        # list so ``" ".join(...)`` does not iterate characters into ``"n o n e"``.
+        if isinstance(visualizers, str):
+            visualizers = [visualizers.strip()] if visualizers.strip() else None
 
         if "max_visible_envs" in launcher_args:
             v = launcher_args["max_visible_envs"]
@@ -937,8 +941,11 @@ class AppLauncher:
             )
 
         self._cli_visualizer_explicit = visualizer_explicit
+        # ``_parse_visualizer_csv("none")`` returns None → visualizer_types=[]. Also treat
+        # an unparsed raw string "none" as disable-all (same as CLI ``--viz none``).
+        raw_is_none = isinstance(raw_visualizers, str) and raw_visualizers.strip().lower() == "none"
         self._cli_visualizer_disable_all = visualizer_explicit and (
-            raw_visualizers is None or "none" in visualizer_types
+            raw_visualizers is None or raw_is_none or "none" in visualizer_types
         )
         self._cli_visualizer_types = [] if self._cli_visualizer_disable_all else visualizer_types
         launcher_args["visualizer"] = self._cli_visualizer_types

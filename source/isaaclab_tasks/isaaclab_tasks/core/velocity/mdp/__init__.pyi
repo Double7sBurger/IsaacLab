@@ -5,6 +5,8 @@
 
 __all__ = [
     "terrain_levels_vel",
+    "apply_pace_newton_params",
+    "randomize_dc_motor_limits",
     "feet_air_time",
     "feet_air_time_positive_biped",
     "feet_slide",
@@ -15,6 +17,8 @@ __all__ = [
 ]
 
 from .curriculums import terrain_levels_vel
+from .dr_events import randomize_dc_motor_limits
+from .sysid_events import apply_pace_newton_params
 from .rewards import (
     feet_air_time,
     feet_air_time_positive_biped,
