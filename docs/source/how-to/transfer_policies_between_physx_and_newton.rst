@@ -300,7 +300,7 @@ They do not represent full PP/PN/NN/NP validation. The backends are shown side b
 .. raw:: html
 
    <video controls preload="metadata" style="width:100%; max-width:960px; margin-bottom:1.5em;">
-     <source src="../../_static/sim2sim_anymal_d_transfer.mp4" type="video/mp4">
+     <source src="../../_static/sim2sim_anymal_d_transfer.webm" type="video/webm">
    </video>
 
 **Allegro hand cube reorientation** (``Isaac-Reorient-Cube-Allegro``, PhysX-to-Newton direction only)
@@ -308,7 +308,7 @@ They do not represent full PP/PN/NN/NP validation. The backends are shown side b
 .. raw:: html
 
    <video controls preload="metadata" style="width:100%; max-width:960px; margin-bottom:1.5em;">
-     <source src="../../_static/sim2sim_allegro_transfer.mp4" type="video/mp4">
+     <source src="../../_static/sim2sim_allegro_transfer.webm" type="video/webm">
    </video>
 
 .. tip::
