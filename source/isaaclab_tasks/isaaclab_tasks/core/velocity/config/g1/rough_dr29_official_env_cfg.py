@@ -164,3 +164,55 @@ class G1RoughDR29OfficialTeacherEnvCfg(G1RoughDR29OfficialEnvCfg):
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
             clip=(-1.0, 1.0),
         )
+
+
+##
+# Robustness variants of the sighted teacher
+##
+
+_HARD_PUSH = {
+    "interval_range_s": (5.0, 10.0),
+    "velocity_range": {"x": (-0.6, 0.6), "y": (-0.6, 0.6), "yaw": (-0.5, 0.5)},
+}
+"""The push the 37-joint DR task uses, which the DR29 family never inherited.
+
+The DR29 events derive from the stock ``EventsCfg``, whose push fires every 10-15 s at +-0.5 m/s in
+x and y with no yaw component. ``rough_dr_env_cfg`` defines a harder one -- twice as often, half
+again as strong, and with a yaw kick -- on the grounds that a biped pushed once an episode has
+learned to wait rather than to recover. These carry that onto the teacher.
+"""
+
+
+@configclass
+class G1RoughDR29TeacherSelfCollisionEnvCfg(G1RoughDR29OfficialTeacherEnvCfg):
+    """The teacher with self-collision on.
+
+    The shipped asset config disables it; WBC-AGILE enables it on the same robot. Beyond realism it
+    is worth testing against the crouch: the teacher's pelvis sinks from 0.783 m at iteration 2000
+    to 0.735 at 5999, and a leg that cannot pass through its own thigh has a physical floor a
+    reward term does not.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.scene.robot.spawn.articulation_props.enabled_self_collisions = True
+
+
+@configclass
+class G1RoughDR29TeacherHardPushEnvCfg(G1RoughDR29OfficialTeacherEnvCfg):
+    """The teacher under the 37-joint DR task's stronger push."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.push_robot.interval_range_s = _HARD_PUSH["interval_range_s"]
+        self.events.push_robot.params["velocity_range"] = _HARD_PUSH["velocity_range"]
+
+
+@configclass
+class G1RoughDR29TeacherRobustEnvCfg(G1RoughDR29TeacherSelfCollisionEnvCfg):
+    """Both at once: self-collision on and the stronger push."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.push_robot.interval_range_s = _HARD_PUSH["interval_range_s"]
+        self.events.push_robot.params["velocity_range"] = _HARD_PUSH["velocity_range"]

@@ -37,6 +37,30 @@ gym.register(
 
 
 gym.register(
+    id="Isaac-Velocity-Rough-G1-DR-Teacher",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rough_dr_depth_distill_env_cfg:G1RoughDRTeacherEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1RoughDRTeacherPPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
+
+gym.register(
+    id="Isaac-Velocity-Rough-G1-DR-DepthDistill",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rough_dr_depth_distill_env_cfg:G1RoughDRDepthDistillEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1RoughDRDepthDistillationRunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
+
+gym.register(
     id="Isaac-Velocity-Rough-G1-DR29-OfficialReward",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,
@@ -55,6 +79,66 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.rough_dr29_official_env_cfg:G1RoughDR29OfficialTeacherEnvCfg",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1RoughDR29PPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
+gym.register(
+    id="Isaac-Velocity-Rough-G1-DR29-Teacher-SelfCol",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rough_dr29_official_env_cfg:G1RoughDR29TeacherSelfCollisionEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1RoughDR29PPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
+
+gym.register(
+    id="Isaac-Velocity-Rough-G1-DR29-Teacher-HardPush",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rough_dr29_official_env_cfg:G1RoughDR29TeacherHardPushEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1RoughDR29PPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
+
+gym.register(
+    id="Isaac-Velocity-Rough-G1-DR29-Teacher-Robust",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rough_dr29_official_env_cfg:G1RoughDR29TeacherRobustEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1RoughDR29PPORunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
+
+
+gym.register(
+    id="Isaac-Velocity-Rough-G1-DR29-Distill",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rough_dr29_distill_env_cfg:G1RoughDR29DistillEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1RoughDR29DistillationRunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
+
+
+gym.register(
+    id="Isaac-Velocity-Rough-G1-DR29-DepthDistill",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.rough_dr29_depth_distill_env_cfg:G1RoughDR29DepthDistillEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1RoughDR29DepthDistillationRunnerCfg",
         "default_agent": "rsl_rl",
     },
 )
