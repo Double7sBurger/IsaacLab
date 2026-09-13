@@ -122,8 +122,13 @@ def randomize_joint_parameters(
             distribution=distribution,
         )
 
-        asset.write_joint_friction_coefficient_to_sim(
-            friction_coeff[env_ids, joint_ids], joint_ids=joint_ids, env_ids=env_ids
+        # The ``_index`` form, not the deprecated ``write_joint_friction_coefficient_to_sim``:
+        # isaaclab_newton's Articulation overrides that shim with a version that forwards a
+        # ``full_data`` argument its own ``..._index`` does not accept, so every call raises
+        # TypeError on Newton. PhysX's ``..._index`` happens to take ``full_data``, which is why
+        # this only fails on one backend.
+        asset.write_joint_friction_coefficient_to_sim_index(
+            joint_friction_coeff=friction_coeff[env_ids, joint_ids], joint_ids=joint_ids, env_ids=env_ids
         )
 
     # joint armature
@@ -136,7 +141,9 @@ def randomize_joint_parameters(
             operation=operation,
             distribution=distribution,
         )
-        asset.write_joint_armature_to_sim(armature[env_ids, joint_ids], joint_ids=joint_ids, env_ids=env_ids)
+        asset.write_joint_armature_to_sim_index(
+            armature=armature[env_ids, joint_ids], joint_ids=joint_ids, env_ids=env_ids
+        )
 
     # joint position limits
     if lower_limit_distribution_params is not None or upper_limit_distribution_params is not None:
