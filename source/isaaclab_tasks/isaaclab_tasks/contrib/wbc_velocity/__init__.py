@@ -31,3 +31,23 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1VelocityPpoRunnerCfg",
     },
 )
+
+gym.register(
+    id="Velocity-G1-WBC-Newton-Teacher-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_newton_env_cfg:G1LowerVelocityNewtonEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1VelocityPpoRunnerCfg",
+    },
+)
+
+gym.register(
+    id="Velocity-G1-WBC-Newton-History-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_newton_env_cfg:G1LowerVelocityHistoryNewtonEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1VelocityPpoRunnerCfg",
+    },
+)

@@ -3,10 +3,11 @@
 
 """Drive a trained WBC-AGILE G1 velocity policy from the keyboard, with a free camera.
 
-The camera is deliberately *not* configured here. Setting ``origin_type="asset"`` on the visualizer
-makes it chase the robot and take the mouse with it; leaving the viewport at the task's own static
-view means the usual Kit navigation (left-drag orbit, middle-drag pan, right-drag / wheel zoom)
-keeps working, so the view can be dragged around by hand while the robot walks.
+The camera is freed by default. The task's own ``ViewerCfg`` uses ``origin_type="asset_root"``,
+which re-aims the viewport at the robot on **every step** -- so orbiting or zooming by hand appears
+to do nothing, because the next step overwrites it. Setting ``origin_type="world"`` stops that and
+leaves normal Kit navigation working: left-drag orbit, middle-drag pan, right-drag or wheel zoom.
+Pass ``--follow`` to get the chase camera back.
 
 Key bindings
 ------------
@@ -37,6 +38,8 @@ parser.add_argument("--v_x", type=float, default=0.8, help="Forward command per 
 parser.add_argument("--v_y", type=float, default=0.4, help="Lateral command per key press [m/s].")
 parser.add_argument("--omega_z", type=float, default=1.0, help="Yaw command per key press [rad/s].")
 parser.add_argument("--height_step", type=float, default=0.01, help="Base-height change per R/F press [m].")
+parser.add_argument("--follow", action="store_true",
+                    help="Keep the task's chase camera. It re-aims every step, so the mouse cannot move the view.")
 
 import cli_args  # isort: skip  # noqa: E402  -- must not import isaaclab_tasks before the app starts
 
@@ -104,6 +107,13 @@ def prepare_for_teleop(env_cfg):
 
     # Long episodes: a time-out in the middle of driving is only an interruption.
     env_cfg.episode_length_s = 1.0e6
+
+    if not args_cli.follow:
+        # See the module docstring: the task's chase camera re-aims every step and silently undoes
+        # every mouse orbit and wheel zoom.
+        env_cfg.viewer.origin_type = "world"
+        env_cfg.viewer.eye = (3.0, -3.0, 2.0)
+        env_cfg.viewer.lookat = (0.0, 0.0, 0.7)
     return env_cfg
 
 
@@ -143,8 +153,11 @@ def main():
     keyboard.add_callback("L", env.unwrapped.reset)
     keyboard.reset()
     print(keyboard)
-    print("[teleop] click the viewport to give it focus, then drive. Camera: left-drag orbit, "
-          "middle-drag pan, wheel zoom.")
+    if args_cli.follow:
+        print("[teleop] --follow: the camera chases the robot and the mouse cannot move it.")
+    else:
+        print("[teleop] click the viewport to give it focus, then drive. Camera is free: "
+              "left-drag orbit, middle-drag pan, wheel zoom.")
 
     with torch.inference_mode():
         obs, _ = env.reset()
