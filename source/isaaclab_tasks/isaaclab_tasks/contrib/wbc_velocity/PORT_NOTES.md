@@ -44,6 +44,13 @@ Every deviation from upstream, each marked `PORT DELTA` in the code:
 
 ## Deliberate omissions
 
+* `agile.isaaclab_extras.monkey_patches.manager_based_rl_env_patch` — it replaces
+  `ManagerBasedRLEnv.step` wholesale with a 3.0.0b2-era copy, silently dropping three things
+  3.0.0's `step` gained: the `compute_final_obs` terminal observation, the visualizer's UI reset
+  request, and advancing `video_recorders` (which made `--video` record an empty clip). It exists
+  to add `pre_sim_step` events and a `_disable_terminations` flag; the velocity task uses neither.
+  Training is unaffected — `compute_final_obs` defaults to `False` and the other two are
+  rendering-only.
 * `agile.isaaclab_extras.monkey_patches.physx_articulation_com_cache` — a 3.0.0b2-only PhysX COM
   cache fix.
 * `agile.isaaclab_extras.monkey_patches.terrain_importer_plane_patch` — guarded by
@@ -72,6 +79,19 @@ export PYTHONPATH=$(ls -d $PWD/source/*/ | tr '\n' ':')$PYTHONPATH
 HEADLESS=1 python scripts/reinforcement_learning/rsl_rl_wbc/train.py \
     --task Velocity-G1-WBC-Teacher-v0 --num_envs 4096
 ```
+
+## Playing a checkpoint
+
+```bash
+# viewer
+python scripts/reinforcement_learning/rsl_rl_wbc/play.py --checkpoint <model_*.pt> --num_envs 4
+# mp4 (needs a display; writes logs/videos/play/wbc_g1_0000.mp4)
+python scripts/reinforcement_learning/rsl_rl_wbc/play.py --checkpoint <model_*.pt> \
+    --num_envs 4 --video --video_length 300
+```
+
+`HEADLESS=1` and `--video` do not combine: the Kit visualizer logs
+"Running in headless mode. Viewport may not display" and the recorder captures nothing.
 
 ## Verified
 
