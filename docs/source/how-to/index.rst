@@ -147,6 +147,7 @@ and policies trained in Newton and deployed in PhysX.
     :maxdepth: 1
 
     transfer_policies_between_physx_and_newton
+    g1_ymsdm
 
 
 Recording an Animation and Video
