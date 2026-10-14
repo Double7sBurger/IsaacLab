@@ -7,3 +7,5 @@
   Kept pretrained depth and SONIC policy inference in the task's ``agents`` package.
   Shared spectator setup across the entry points, derived SONIC joint mappings from named joints,
   and used the launcher's selected CUDA device for PhysX particles and SONIC inference.
+  Named the reconstructed scene modules ``fixed_course`` and reused height-field meshing, face
+  triangulation, and trimesh primitives for their static geometry.
