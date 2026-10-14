@@ -306,7 +306,9 @@ This Newton replay uses a base capsule radius of 0.10 m and a shape margin of 0.
    :alt: PhysX and Newton MJWarp ANYmal-D locomotion, both with velocity arrows.
    :width: 960px
 
-**Allegro hand cube reorientation** (``Isaac-Reorient-Cube-Allegro``, PhysX-to-Newton direction only)
+**Allegro hand cube reorientation** (``Isaac-Reorient-Cube-Allegro-Direct``, PhysX-to-Newton direction only)
+
+This Newton replay uses aligned joint ordering, identified drive and contact parameters, and eight solver substeps.
 
 .. image:: https://download.isaacsim.omniverse.nvidia.com/isaaclab/images/sim2sim_allegro_transfer.gif
    :alt: PhysX and Newton MJWarp Allegro hand cube reorientation.
