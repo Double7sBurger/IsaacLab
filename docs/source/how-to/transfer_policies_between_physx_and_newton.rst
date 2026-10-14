@@ -302,13 +302,13 @@ They do not represent full PP/PN/NN/NP validation. The backends are shown side b
 The green and blue arrows show commanded and measured linear velocity, respectively.
 This Newton replay uses a base capsule radius of 0.10 m and a shape margin of 0.005 m.
 
-.. image:: https://github.com/Double7sBurger/IsaacLab/releases/download/sim2sim-demos-20261015/sim2sim_anymal_d_transfer.gif
+.. image:: https://download.isaacsim.omniverse.nvidia.com/isaaclab/images/sim2sim_anymal_d_transfer.gif
    :alt: PhysX and Newton MJWarp ANYmal-D locomotion, both with velocity arrows.
    :width: 960px
 
 **Allegro hand cube reorientation** (``Isaac-Reorient-Cube-Allegro``, PhysX-to-Newton direction only)
 
-.. image:: https://github.com/Double7sBurger/IsaacLab/releases/download/sim2sim-demos-20261015/sim2sim_allegro_transfer.gif
+.. image:: https://download.isaacsim.omniverse.nvidia.com/isaaclab/images/sim2sim_allegro_transfer.gif
    :alt: PhysX and Newton MJWarp Allegro hand cube reorientation.
    :width: 960px
 
