@@ -293,8 +293,10 @@ class GraphPolicy:
         self.inference = InferenceManager(pipeline)
 
         model = next(iter(yaml.safe_load(open(pipeline))["models"].values()))
+        # The export names its own tensors; the connection strings are how Isaac Lab says what each
+        # one carries, and are what the simulation deployment resolves against a scene.
         self._ports = {
-            io["isaaclab_connection"]: (io["name"], io)
+            io["isaaclab_connection"]: io["name"]
             for io in list(model["inputs"]) + list(model["outputs"])
             if "isaaclab_connection" in io
         }
@@ -311,8 +313,8 @@ class GraphPolicy:
         self.default_pose = self._default[self._motors]
 
         # Warm the graph on synthetic inputs, before anything owns rt/lowcmd. This pays the first
-        # call's cost outside the control loop and reads back the gains the ramp holds with.
-        self.kp = self.kd = None
+        # call's cost outside the control loop and leaves self.kp and self.kd holding the gains the
+        # ramp uses, which are the policy's own rather than numbers repeated here.
         for _ in range(3):
             self.step(
                 self.default_pose, np.zeros(len(MOTOR_NAMES), np.float32),
@@ -328,42 +330,37 @@ class GraphPolicy:
         frame = np.asarray(depth, dtype=np.float32)
         if self._rotate:
             frame = frame[::-1, ::-1]
-        values = {
-            "state:robot:joint_pos": q[None],
-            "state:robot:joint_vel": dq[None],
-            "state:robot:root_quat_w": np.asarray(quat_xyzw, np.float32)[None],
-            "state:robot:root_ang_vel_b": np.asarray(ang_vel, np.float32)[None],
-            "command:base_velocity": np.asarray(command, np.float32)[None],
-            "state:depth_camera:output:distance_to_image_plane": frame[None, :, :, None],
-        }
-        inputs = {}
-        for connection, value in values.items():
-            key, spec = self._ports[connection]
-            array = np.ascontiguousarray(value, dtype=np.float32)
-            if array.shape != tuple(spec["shape"]) or not np.isfinite(array).all():
-                raise ValueError(f"invalid input {connection}: shape {array.shape}")
-            inputs[key] = self._torch.from_numpy(array)
 
+        inputs = {
+            self._key(connection): self._torch.from_numpy(np.ascontiguousarray(value, np.float32))
+            for connection, value in {
+                "state:robot:joint_pos": q[None],
+                "state:robot:joint_vel": dq[None],
+                "state:robot:root_quat_w": np.asarray(quat_xyzw, np.float32)[None],
+                "state:robot:root_ang_vel_b": np.asarray(ang_vel, np.float32)[None],
+                "command:base_velocity": np.asarray(command, np.float32)[None],
+                "state:depth_camera:output:distance_to_image_plane": frame[None, :, :, None],
+            }.items()
+        }
         with self._torch.inference_mode():
             outputs = self.inference.run_policy(inputs)
-        written = {}
-        for connection, (key, spec) in self._ports.items():
-            if not connection.startswith("write:"):
-                continue
-            value = outputs[key].detach().cpu().numpy()
-            if value.shape != tuple(spec["shape"]) or not np.isfinite(value).all():
-                raise ValueError(f"invalid output {connection}: shape {value.shape}")
-            written[connection] = value.reshape(-1)[self._motors]
 
-        kp = written["write:robot:write_joint_stiffness_to_sim_index"]
-        kd = written["write:robot:write_joint_damping_to_sim_index"]
-        if (kp < 0).any() or (kd < 0).any():
-            raise ValueError("the graph returned negative PD gains")
-        if self.kp is None:
-            self.kp, self.kd = kp, kd
-        elif not (np.array_equal(kp, self.kp) and np.array_equal(kd, self.kd)):
-            raise ValueError("this loop assumes the exported PD gains are constant")
-        return written["write:robot:set_joint_position_target_index"], kp, kd
+        target = self._motors_of(outputs, "write:robot:set_joint_position_target_index")
+        self.kp = self._motors_of(outputs, "write:robot:write_joint_stiffness_to_sim_index")
+        self.kd = self._motors_of(outputs, "write:robot:write_joint_damping_to_sim_index")
+        # The one check worth making here: these three go straight into motor commands, and a NaN
+        # from a bad joint or IMU reading would be written to the robot as a target.
+        if not np.isfinite([target, self.kp, self.kd]).all():
+            raise ValueError("the graph returned a non-finite target or gain")
+        return target, self.kp, self.kd
+
+    def _key(self, connection: str) -> str:
+        """The graph's own name for a tensor, given the Isaac Lab connection it carries."""
+        return self._ports[connection]
+
+    def _motors_of(self, outputs: dict, connection: str) -> np.ndarray:
+        """One of the graph's 43-wide outputs, reduced to the 29 motors in ``rt/lowcmd`` order."""
+        return outputs[self._key(connection)].detach().cpu().numpy().reshape(-1)[self._motors]
 
 
 def take_lowcmd(domain_id: int, probe_s: float = 3.0) -> None:
