@@ -149,33 +149,16 @@ against a simulated scene. Hardware deployment resolves the same connections aga
 The Control Loop
 ^^^^^^^^^^^^^^^^
 
-.. code-block:: python
+.. literalinclude:: ../../../../scripts/reinforcement_learning/g1_deploy.py
+   :language: python
+   :start-at: while teleop.running:
+   :end-at: link.wait(CONTROL_DT)
+   :dedent: 8
 
-   inference = InferenceManager(args.pipeline)
-   link = G1Link(args.domain_id, args.interface)
-   depth = DepthStream(args.depth_port)
-   teleop = Teleop()
-
-   bring_up(link, inference.default_joint_pos, ramp_s=3.0)
-   inference.reset()
-
-   with link.commanding():
-       while teleop.running:
-           state = link.read()
-           outputs = inference.run_policy({
-               "robot_joint_pos": state.joint_pos,
-               "robot_joint_vel": state.joint_vel,
-               "robot_root_quat_w": state.root_quat_xyzw,
-               "robot_root_ang_vel_b": state.ang_vel,
-               "base_velocity": teleop.command(state.root_quat_xyzw),
-               "depth_camera_output_distance_to_image_plane": depth.latest(),
-           })
-           link.write(
-               joint_pos=outputs["joint_pos"],
-               kp=outputs["joint_pos_kp_gains"],
-               kd=outputs["joint_pos_kd_gains"],
-           )
-           link.wait(CONTROL_DT)
+The gains are not read from the pipeline. ``InferenceManager`` exposes only ``nodes``, ``reset``
+and ``run_policy``; the default pose and the gains are constants inside the graph. The ramp target
+therefore comes from asking the graph once, before the policy is driving, which is also the pose it
+commands on its first step.
 
 Conversions
 ^^^^^^^^^^^
