@@ -155,10 +155,15 @@ The Control Loop
    :end-at: link.wait(CONTROL_DT)
    :dedent: 8
 
-The gains are not read from the pipeline. ``InferenceManager`` exposes only ``nodes``, ``reset``
-and ``run_policy``; the default pose and the gains are constants inside the graph. The ramp target
-therefore comes from asking the graph once, before the policy is driving, which is also the pose it
-commands on its first step.
+Two details about the ends of this loop.
+
+The graph writes **every joint of the articulation**, fingers included, so its 43 outputs are
+matched to the 29 motors ``rt/lowcmd`` carries by name, using the ``element_names`` the export
+records. The two orders agree for the first 22 joints and then diverge, which is the kind of
+mismatch that produces a walking robot with the wrong arm.
+
+The ramp target is a fixed constant, not something read back from the policy. The operator squares
+the robot up in that pose and it has to be the same on every run.
 
 Conversions
 ^^^^^^^^^^^

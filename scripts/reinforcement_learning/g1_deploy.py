@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import select
 import socket
 import sys
@@ -37,8 +38,46 @@ DEPTH_MAX_RANGE = 3.0
 DEPTH_MAX_AGE = 0.2
 """Refuse to step on a frame older than this [s]. Ten control periods."""
 
-NUM_MOTORS = 29
-"""Body joints this deployment commands. ``rt/lowcmd`` carries more; the rest are left alone."""
+MOTOR_NAMES = (
+    "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+    "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+    "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+    "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+    "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+    "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
+    "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
+    "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+)
+"""The 29 body joints ``rt/lowcmd`` carries, in its own order.
+
+The exported graph writes every joint of the articulation, fingers included, so its outputs are
+matched to these by name rather than by position -- the two orders agree for the first 22 joints
+and then diverge, which is the kind of mismatch that produces a walking robot with the wrong arm.
+"""
+
+DEFAULT_JOINT_POS = {
+    ".*_hip_pitch_joint": -0.20,
+    ".*_knee_joint": 0.42,
+    ".*_ankle_pitch_joint": -0.23,
+    ".*_elbow_joint": 0.87,
+    "left_shoulder_pitch_joint": 0.35,
+    "left_shoulder_roll_joint": 0.16,
+    "right_shoulder_pitch_joint": 0.35,
+    "right_shoulder_roll_joint": -0.16,
+}
+"""The pose the ramp ends at [rad], by joint-name pattern; joints not listed go to zero.
+
+This is the task's own initial state, and it is fixed on purpose. The operator squares the robot up
+in this pose and it has to be the same every run -- a target derived from the policy's output would
+depend on whatever pose the robot was sagging in when it was read.
+"""
+
+RAMP_KP = 100.0
+"""Stiffness to reach and hold the start pose with [N*m/rad], until the policy supplies its own."""
+
+RAMP_KD = 2.0
+"""Damping for the same [N*m*s/rad]."""
 
 
 class DepthStream:
@@ -168,8 +207,8 @@ class G1Link:
             "G1State",
             (),
             {
-                "joint_pos": np.array([m.q for m in motors[:NUM_MOTORS]], dtype=np.float32),
-                "joint_vel": np.array([m.dq for m in motors[:NUM_MOTORS]], dtype=np.float32),
+                "joint_pos": np.array([m.q for m in motors[: len(MOTOR_NAMES)]], dtype=np.float32),
+                "joint_vel": np.array([m.dq for m in motors[: len(MOTOR_NAMES)]], dtype=np.float32),
                 # The IMU publishes (w, x, y, z); the graph expects (x, y, z, w).
                 "root_quat_xyzw": np.roll(quat_wxyz, -1),
                 "ang_vel": np.asarray(state.imu_state.gyroscope[:3], dtype=np.float32),
@@ -179,7 +218,7 @@ class G1Link:
 
     def write(self, joint_pos, kp, kd) -> None:
         """Send one ``rt/lowcmd``. The gains are the policy's own outputs, not configuration."""
-        for i in range(NUM_MOTORS):
+        for i in range(len(MOTOR_NAMES)):
             motor = self._command.motor_cmd[i]
             motor.mode, motor.q, motor.dq, motor.tau = 1, float(joint_pos[i]), 0.0, 0.0
             motor.kp, motor.kd = float(kp[i]), float(kd[i])
@@ -190,7 +229,7 @@ class G1Link:
     def damp(self, kd, seconds: float = 1.5) -> None:
         """Bleed off energy with no stiffness, then stop commanding. Every exit goes through here."""
         print("[..] damping down")
-        zero = np.zeros(NUM_MOTORS, dtype=np.float32)
+        zero = np.zeros(len(MOTOR_NAMES), dtype=np.float32)
         for _ in range(int(seconds / CONTROL_DT)):
             self.write(zero, zero, kd)
             self.wait(CONTROL_DT)
@@ -201,34 +240,39 @@ class G1Link:
         time.sleep(max(0.0, self._next - time.monotonic()))
 
 
-def probe(inference, link: G1Link, frame: np.ndarray):
-    """Ask the graph once where it wants the joints, and with what gains.
+def default_pose() -> np.ndarray:
+    """:data:`DEFAULT_JOINT_POS` resolved onto the motors, in ``rt/lowcmd`` order [rad]."""
+    pose = np.zeros(len(MOTOR_NAMES), dtype=np.float32)
+    for pattern, value in DEFAULT_JOINT_POS.items():
+        for i, name in enumerate(MOTOR_NAMES):
+            if re.fullmatch(pattern, name):
+                pose[i] = value
+    return pose
 
-    The ramp needs a target before the policy is driving, and ``InferenceManager`` exposes only
-    ``nodes``, ``reset`` and ``run_policy`` -- the default pose and the gains are constants inside
-    the graph, not attributes on it. So the graph is asked: its first output from the robot's own
-    standing state is the pose it will immediately command anyway, which is a better ramp target
-    than a number repeated here.
 
-    The graph is stateful, so the caller resets it afterwards and the probe leaves no history.
+def graph_to_motors(pipeline: str) -> np.ndarray:
+    """Index into the graph's ``joint_pos`` output for each motor, read from the export.
+
+    Args:
+        pipeline: The exported LEAPP ``.yaml``.
 
     Returns:
-        ``(joint_pos, kp, kd)`` -- the ramp target [rad] and the gains to hold it with.
+        ``(29,)`` indices, so ``outputs["joint_pos"][index]`` is in ``rt/lowcmd`` order.
+
+    Raises:
+        KeyError: If the export does not drive one of the motors, rather than silently leaving it
+            at whatever the array happened to hold.
     """
-    state = link.read()
-    outputs = inference.run_policy({
-        "robot_joint_pos": state.joint_pos,
-        "robot_joint_vel": state.joint_vel,
-        "robot_root_quat_w": state.root_quat_xyzw,
-        "robot_root_ang_vel_b": state.ang_vel,
-        "base_velocity": np.zeros(3, dtype=np.float32),
-        "depth_camera_output_distance_to_image_plane": frame,
-    })
-    return (
-        np.asarray(outputs["joint_pos"], dtype=np.float32).reshape(-1),
-        np.asarray(outputs["joint_pos_kp_gains"], dtype=np.float32).reshape(-1),
-        np.asarray(outputs["joint_pos_kd_gains"], dtype=np.float32).reshape(-1),
-    )
+    import yaml
+
+    description = yaml.safe_load(open(pipeline))
+    model = next(iter(description["models"].values()))
+    names = next(o for o in model["outputs"] if o["name"] == "joint_pos")["element_names"][0]
+    order = {name: i for i, name in enumerate(names)}
+    missing = [name for name in MOTOR_NAMES if name not in order]
+    if missing:
+        raise KeyError(f"the export does not drive {missing}")
+    return np.array([order[name] for name in MOTOR_NAMES], dtype=np.int64)
 
 
 def confirm(word: str, prompt: str) -> None:
@@ -281,12 +325,13 @@ def main() -> int:
     teleop = Teleop()
     depth.wait()
 
-    default_pose, kp, kd = probe(inference, link, depth.latest())
-    inference.reset()
+    motors = graph_to_motors(args.pipeline)
+    ramp_kp = np.full(len(MOTOR_NAMES), RAMP_KP, dtype=np.float32)
+    ramp_kd = np.full(len(MOTOR_NAMES), RAMP_KD, dtype=np.float32)
     print(f"[ok] mode_machine={link.read().mode_machine}  policy at {1 / CONTROL_DT:.0f} Hz")
     print(f"[..] teleop: {Teleop.HELP}")
 
-    bring_up(link, default_pose, kp, kd, ramp_s=3.0)
+    bring_up(link, default_pose(), ramp_kp, ramp_kd, ramp_s=3.0)
     try:
         while teleop.running:
             state = link.read()
@@ -302,15 +347,15 @@ def main() -> int:
                 "depth_camera_output_distance_to_image_plane": frame,
             })
             link.write(
-                joint_pos=outputs["joint_pos"],
-                kp=outputs["joint_pos_kp_gains"],
-                kd=outputs["joint_pos_kd_gains"],
+                joint_pos=np.asarray(outputs["joint_pos"]).reshape(-1)[motors],
+                kp=np.asarray(outputs["joint_pos_kp_gains"]).reshape(-1)[motors],
+                kd=np.asarray(outputs["joint_pos_kd_gains"]).reshape(-1)[motors],
             )
             link.wait(CONTROL_DT)
     except (KeyboardInterrupt, RuntimeError) as error:
         print(f"\n[..] {error or 'interrupted'}")
     finally:
-        link.damp(kd)
+        link.damp(ramp_kd)
     return 0
 
 
