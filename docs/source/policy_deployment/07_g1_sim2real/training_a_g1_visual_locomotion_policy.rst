@@ -1,5 +1,5 @@
-Deploying a G1 Depth Policy on Hardware
-=======================================
+Training a G1 Locomotion Policy with Visual Information for Real Robot Deployment
+=================================================================================
 
 .. currentmodule:: isaaclab
 
