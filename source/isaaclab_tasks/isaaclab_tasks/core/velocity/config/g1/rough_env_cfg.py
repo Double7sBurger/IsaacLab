@@ -11,26 +11,28 @@ both with a chest-mounted depth camera and is distilled from the teacher in the 
 environment.
 """
 
+import math
 from collections.abc import Sequence
+from copy import deepcopy
 
 import torch
-
 from isaaclab_newton.sim.schemas import NewtonArticulationCfg
 from isaaclab_physx.sim.schemas import PhysxArticulationCfg, PhysxRigidBodyCfg
 
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg
-from isaaclab.managers import ManagerTermBase
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sensors import CameraCfg
 from isaaclab.sim import PinholeCameraCfg, UsdFileCfg
 from isaaclab.utils import configclass, replace
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
-from isaaclab.utils.buffers import CircularBuffer
-from isaaclab.utils.noise import UniformNoiseCfg as Unoise
+from isaaclab.utils.images import CameraFrameStack
+
+from isaaclab_tasks.utils.presets import MultiBackendRendererCfg
 
 from isaaclab_assets import G1_MINIMAL_CFG
 
@@ -40,6 +42,7 @@ from ...velocity_env_cfg import (
     ObservationsCfg,
     RewardsCfg,
 )
+from . import mdp as g1_mdp
 
 
 @configclass
@@ -169,96 +172,48 @@ class G1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
 
 
 DEPTH_WIDTH = 64
-"""Rendered depth width [px]. Small on purpose -- rendering is the cost of this stage."""
 
 DEPTH_HEIGHT = 38
-"""Rendered depth height [px], at the D435's 87:58.8 degree aspect."""
 
 DEPTH_STACK = 3
-"""Depth frames handed to the student as channels.
-
-A forward-facing camera never sees the ground under or behind the robot, which the teacher's height
-scan does. Stacking lets the student carry terrain it has already walked past.
-"""
 
 DEPTH_MAX_RANGE = 3.0
-"""Range the depth is clipped to [m]. The D435's usable depth falls off well before its optical
-limit, and this is also what a no-return maps to."""
 
 DEPTH_OFFSET_POS = (0.0576, 0.0175, 0.4299)
-"""Camera position on ``torso_link`` [m], measured on the robot."""
 
 DEPTH_OFFSET_ROT = (0.9150, 0.0, -0.4035, 0.0)
-"""Camera orientation as ``(w, x, y, z)`` in the ``world`` convention: 47.6 degrees below
-horizontal, measured on the robot against 48.2."""
 
 
 class DepthImageStack(ManagerTermBase):
-    """The last :data:`DEPTH_STACK` depth frames as channels of one rank-4 observation.
-
-    Isaac Lab's per-term ``history_length`` cannot be used here: it stacks on a new axis, yielding
-    ``(B, T, C, H, W)``, and ``rsl_rl`` recognises only ``(B, C, H, W)`` as an image.
-    """
+    """Stack three D435 depth frames as CNN channels, resetting history with each episode."""
 
     def __init__(self, cfg: ObsTerm, env) -> None:
         super().__init__(cfg, env)
-        self._stack = CircularBuffer(
-            max_len=DEPTH_STACK, batch_size=env.num_envs, device=env.device, stack_dim=1
-        )
+        self._frames = CameraFrameStack(env.num_envs, env.device, frame_stack=DEPTH_STACK, channel_first=True)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
-        # Without this a freshly reset environment keeps looking at the terrain its previous
-        # episode ended on.
-        self._stack.reset(env_ids)
+        self._frames.reset(env_ids)
 
     def __call__(self, env, sensor_cfg: SceneEntityCfg, data_type: str) -> torch.Tensor:
-        """Stacked depth [m], shape ``(B, DEPTH_STACK, H, W)``."""
         frame = env.scene.sensors[sensor_cfg.name].data.output[data_type]
         frame = frame.torch if hasattr(frame, "torch") else frame
-        # Rays that hit nothing come back as +inf. Clamping them to the far range says "nothing
-        # within range", which is what the hardware reports; mapping them to zero would say
-        # "something touching the lens".
         frame = torch.nan_to_num(frame, nan=DEPTH_MAX_RANGE, posinf=DEPTH_MAX_RANGE)
-        # The rendered frame is rolled 180 degrees against the real camera: on flat ground its rows
-        # run near-to-far where the hardware runs far-to-near, and an obstacle on the robot's left
-        # lands on the right. Both axes, so it is a roll about the optical axis.
-        self._stack.append(frame.permute(0, 3, 1, 2).flip((-2, -1)).contiguous())
-        return self._stack.stacked.clone()
-
-
-@configclass
-class G1TeacherObservationsCfg(ObservationsCfg):
-    """The privileged group the teacher trains on, beside the deployable group it is distilled into.
-
-    ``policy`` holds exactly what a real G1 publishes. ``teacher`` adds the height scan and the base
-    linear velocity, which it does not.
-    """
-
-    @configclass
-    class PolicyCfg(ObsGroup):
-        """Proprioception, and nothing the hardware cannot measure."""
-
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
-        projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
-        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
-        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
-        actions = ObsTerm(func=mdp.last_action)
-
-        def __post_init__(self):
-            self.enable_corruption = True
-            self.concatenate_terms = True
-            self.history_length = 5
-
-    policy: PolicyCfg = PolicyCfg()
-    teacher: ObservationsCfg.PolicyCfg = ObservationsCfg.PolicyCfg()
+        return self._frames(frame.flip((1, 2)))
 
 
 G1_29DOF_VELOCITY_CFG = ArticulationCfg(
     spawn=UsdFileCfg(
         usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1_29dof.usd",
         activate_contact_sensors=True,
-        rigid_props=PhysxRigidBodyCfg(max_depenetration_velocity=1.0),
+        rigid_props=PhysxRigidBodyCfg(
+            disable_gravity=False,
+            retain_accelerations=False,
+            linear_damping=0.0,
+            angular_damping=0.0,
+            max_linear_velocity=1000.0,
+            max_angular_velocity=1000.0,
+            max_depenetration_velocity=1.0,
+        ),
         articulation_props=[
             PhysxArticulationCfg(
                 enabled_self_collisions=False, solver_position_iteration_count=8, solver_velocity_iteration_count=4
@@ -266,9 +221,6 @@ G1_29DOF_VELOCITY_CFG = ArticulationCfg(
             NewtonArticulationCfg(self_collision_enabled=False),
         ],
     ),
-    # 0.793 rather than the 0.74 of ``G1_MINIMAL_CFG``: pelvis-to-ankle is 0.743 m on this robot
-    # against 0.687 m on the superseded one, so the lower height buries the feet in the ground
-    # plane and the solver answers by launching the robot upward.
     init_state=ArticulationCfg.InitialStateCfg(
         pos=(0.0, 0.0, 0.793),
         joint_pos={
@@ -283,13 +235,10 @@ G1_29DOF_VELOCITY_CFG = ArticulationCfg(
         },
     ),
     soft_joint_pos_limit_factor=0.9,
-    # Every torque ceiling is the hardware's, from the official MJCF's ``ctrlrange``. The ankle is
-    # the one that matters: a policy trained against ``G1_MINIMAL_CFG``'s 20 N*m never learns it
-    # has 50, and 20 is not enough to turn on rough terrain.
     actuators={
         "legs": ImplicitActuatorCfg(
             joint_names_expr=[".*_hip_.*", ".*_knee_joint", "waist_yaw_joint"],
-            joint_effort_limit={".*_hip_.*": 88.0, ".*_knee_joint": 139.0, "waist_yaw_joint": 88.0},
+            joint_effort_limit=300.0,
             stiffness={
                 ".*_hip_pitch_joint": 200.0,
                 ".*_hip_roll_joint": 150.0,
@@ -301,7 +250,7 @@ G1_29DOF_VELOCITY_CFG = ArticulationCfg(
             armature=0.01,
         ),
         "feet": ImplicitActuatorCfg(
-            joint_names_expr=[".*_ankle_.*"], joint_effort_limit=50.0, stiffness=20.0, damping=2.0, armature=0.01
+            joint_names_expr=[".*_ankle_.*"], joint_effort_limit=20.0, stiffness=20.0, damping=2.0, armature=0.01
         ),
         "waist": ImplicitActuatorCfg(
             joint_names_expr=["waist_roll_joint", "waist_pitch_joint"],
@@ -312,45 +261,25 @@ G1_29DOF_VELOCITY_CFG = ArticulationCfg(
         ),
         "arms": ImplicitActuatorCfg(
             joint_names_expr=[".*_shoulder_.*", ".*_elbow_joint", ".*_wrist_.*"],
-            joint_effort_limit={
-                ".*_shoulder_.*": 25.0,
-                ".*_elbow_joint": 25.0,
-                ".*_wrist_roll_joint": 25.0,
-                ".*_wrist_pitch_joint": 5.0,
-                ".*_wrist_yaw_joint": 5.0,
-            },
+            joint_effort_limit=300.0,
             stiffness=40.0,
             damping=10.0,
             armature=0.01,
         ),
         "hands": ImplicitActuatorCfg(
-            joint_names_expr=[".*_hand_.*"], joint_effort_limit=2.45, stiffness=40.0, damping=10.0, armature=0.001
+            joint_names_expr=[".*_hand_.*"], joint_effort_limit=300.0, stiffness=40.0, damping=10.0, armature=0.001
         ),
     },
 )
-"""The 29-DoF G1, which is the robot this pipeline deploys onto.
-
-``G1_MINIMAL_CFG`` is built from a superseded URDF: its waist is a single ``torso_joint`` and its
-forearm is ``elbow_pitch``/``elbow_roll``. The hardware names those ``waist_yaw``/``waist_roll``/
-``waist_pitch`` and ``elbow``/``wrist_roll``, and adds wrist pitch and yaw. Body names are
-unchanged, so the height scanner, the base-contact termination and the base-mass event carry over;
-only joint names do not.
-"""
 
 
 @configclass
 class G1RoughTeacherEnvCfg(G1RoughEnvCfg):
-    """The teacher: PPO on the privileged observation, on the 29-DoF asset."""
-
-    observations: G1TeacherObservationsCfg = G1TeacherObservationsCfg()
+    """Height35 teacher on mesh terrain with the original training actuator limits."""
 
     def __post_init__(self):
         super().__post_init__()
-        # scene
         self.scene.robot = replace(G1_29DOF_VELOCITY_CFG, prim_path="{ENV_REGEX_NS}/Robot")
-        # rewards -- the joint names of G1Rewards respelled for this asset. A term whose regex
-        # matches nothing is silently inert, so leaving them alone drops the penalty instead of
-        # raising.
         self.rewards.joint_deviation_arms.params["asset_cfg"] = SceneEntityCfg(
             "robot",
             joint_names=[".*_shoulder_.*_joint", ".*_elbow_joint", ".*_wrist_.*_joint"],
@@ -362,44 +291,144 @@ class G1RoughTeacherEnvCfg(G1RoughEnvCfg):
             "robot", joint_names=["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"]
         )
 
+        self.seed = 42
+        self.scene.num_envs = 4096
+        self.sim.use_newton_actuators = False
+        self.sim.visualizer_cfgs = []
+        self.sim.default_visualizer_cfg = None
+        terrain = self.scene.terrain.terrain_generator
+        proportions = {
+            "pyramid_stairs": 0.2,
+            "pyramid_stairs_inv": 0.2,
+            "boxes": 0.2,
+            "random_rough": 0.2,
+            "hf_pyramid_slope": 0.1,
+            "hf_pyramid_slope_inv": 0.1,
+        }
+        for name, subterrain in terrain.sub_terrains.items():
+            subterrain.convert_to_heightfield = False
+            subterrain.proportion = proportions[name]
+        for name in ("pyramid_stairs", "pyramid_stairs_inv"):
+            terrain.sub_terrains[name].step_height_range = (0.05, 0.35)
+            terrain.sub_terrains[name].step_width = 0.3
+        self.actions.joint_pos.scale = {
+            ".*_hip_yaw_joint": 0.1467,
+            ".*_hip_roll_joint": 0.1467,
+            ".*_hip_pitch_joint": 0.11,
+            ".*_knee_joint": 0.1738,
+            "waist_yaw_joint": 0.11,
+            "waist_roll_joint": 0.0625,
+            "waist_pitch_joint": 0.0625,
+            ".*_ankle_pitch_joint": 0.625,
+            ".*_ankle_roll_joint": 0.625,
+            ".*_shoulder_.*_joint": 0.1563,
+            ".*_elbow_joint": 0.1563,
+            ".*_wrist_roll_joint": 0.1563,
+            ".*_wrist_pitch_joint": 0.0313,
+            ".*_wrist_yaw_joint": 0.0313,
+            ".*_hand_.*_joint": 0.0153,
+        }
+        self.rewards.track_lin_vel_xy_exp.weight = 2.0
+        self.rewards.ang_vel_xy_l2.weight = -0.05
+        self.rewards.feet_air_time.weight = 1.0
+        self.rewards.feet_slide.weight = -0.5
+        self.rewards.joint_deviation_hip.func = g1_mdp.joint_deviation_l2
+        self.rewards.joint_deviation_hip.weight = -1.0
+        self.rewards.joint_deviation_hip.params["asset_cfg"].joint_names = [".*_hip_roll_joint", ".*_hip_yaw_joint"]
+        self.rewards.joint_deviation_torso.func = g1_mdp.joint_deviation_l2
+        self.rewards.joint_deviation_torso.weight = -1.0
+        self.rewards.pelvis_height = RewTerm(
+            func=g1_mdp.pelvis_height_deficit_l2,
+            weight=-10.0,
+            params={
+                "target_height": 0.65,
+                "asset_cfg": SceneEntityCfg("robot"),
+                "sensor_cfg": SceneEntityCfg("height_scanner"),
+            },
+        )
+        self.rewards.torso_ang_vel = RewTerm(
+            func=g1_mdp.body_ang_vel_xy_l2,
+            weight=-0.1,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=["torso_link"])},
+        )
+        self.rewards.root_downward_speed = RewTerm(
+            func=g1_mdp.root_downward_speed_l2,
+            weight=-1.0,
+            params={"speed_limit": 0.5},
+        )
+        self.rewards.feet_support_edge = RewTerm(
+            func=g1_mdp.feet_support_edge_distance,
+            weight=-5.0,
+            params={
+                **deepcopy(self.rewards.feet_slide.params),
+                "sole_size": (0.203109218, 0.065469244, 0.0185078794),
+                "sole_offset": (0.0359170487, 0.0, -0.0251700647),
+            },
+        )
+        self.terminations.base_height = DoneTerm(
+            func=g1_mdp.pelvis_below_terrain_clearance_after_warmup,
+            params={
+                "minimum_height": 0.4,
+                "warmup_steps": 12000,
+                "asset_cfg": SceneEntityCfg("robot"),
+                "sensor_cfg": SceneEntityCfg("height_scanner"),
+            },
+        )
+
 
 @configclass
-class G1DepthStudentObservationsCfg(G1TeacherObservationsCfg):
-    """The teacher's groups plus the camera. ``policy`` and ``teacher`` are inherited unchanged."""
+class G1DepthStudentObservationsCfg(ObservationsCfg):
+    """Deployable observations, clean privileged targets and an auxiliary reflected camera."""
+
+    teacher: ObservationsCfg.PolicyCfg = ObservationsCfg.PolicyCfg()
 
     @configclass
     class DepthCfg(ObsGroup):
-        """Rank 4, and kept on its own so ``rsl_rl`` routes it through the convolutional encoder."""
-
         depth = ObsTerm(
             func=DepthImageStack,
             params={"sensor_cfg": SceneEntityCfg("depth_camera"), "data_type": "distance_to_image_plane"},
             clip=(0.0, DEPTH_MAX_RANGE),
             scale=1.0 / DEPTH_MAX_RANGE,
         )
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = True
+        enable_corruption = False
+        concatenate_terms = True
 
     depth: DepthCfg = DepthCfg()
+    depth_mirror: DepthCfg = DepthCfg()
 
 
 @configclass
 class G1RoughDepthStudentEnvCfg(G1RoughTeacherEnvCfg):
-    """The student: the teacher's environment, plus the camera it is given instead of the scan."""
+    """Distill height35 with five proprioceptive frames and mirrored depth supervision."""
 
     observations: G1DepthStudentObservationsCfg = G1DepthStudentObservationsCfg()
 
     def __post_init__(self):
         super().__post_init__()
+        self.observations.policy.base_lin_vel = None
+        self.observations.policy.height_scan = None
+        for name in ("base_ang_vel", "projected_gravity", "velocity_commands", "joint_pos", "joint_vel", "actions"):
+            term = getattr(self.observations.policy, name)
+            term.history_length = 5
+            term.flatten_history_dim = True
+        self.observations.teacher.enable_corruption = False
         self.scene.depth_camera = CameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/torso_link/depth_camera",
-            update_period=self.decimation * self.sim.dt,
+            update_period=0.0,
+            update_latest_camera_pose=True,
+            renderer_cfg=MultiBackendRendererCfg(),
             width=DEPTH_WIDTH,
             height=DEPTH_HEIGHT,
             data_types=["distance_to_image_plane"],
-            # 87 x 58.8 degrees, the D435's depth field of view.
-            spawn=PinholeCameraCfg(focal_length=1.93, horizontal_aperture=3.58, clipping_range=(0.1, 20.0)),
+            spawn=PinholeCameraCfg(
+                focal_length=1.93,
+                horizontal_aperture=2.0 * 1.93 * math.tan(math.radians(87.0 / 2.0)),
+                clipping_range=(0.05, 10.0),
+            ),
             offset=CameraCfg.OffsetCfg(pos=DEPTH_OFFSET_POS, rot=DEPTH_OFFSET_ROT, convention="world"),
         )
+        self.scene.depth_camera_mirror = deepcopy(self.scene.depth_camera)
+        self.scene.depth_camera_mirror.prim_path = "{ENV_REGEX_NS}/Robot/torso_link/depth_camera_mirror"
+        x, y, z = DEPTH_OFFSET_POS
+        self.scene.depth_camera_mirror.offset.pos = (x, -y, z)
+        self.observations.depth_mirror.depth.params["sensor_cfg"] = SceneEntityCfg("depth_camera_mirror")

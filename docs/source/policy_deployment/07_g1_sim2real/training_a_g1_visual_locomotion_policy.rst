@@ -60,6 +60,12 @@ raise -- it just trains a different robot. ``G1RoughTeacherEnvCfg`` swaps the as
 the joint names of every reward that referred to the old ones.
 
 
+The default recipe is height35: 4096 environments, 6000 PPO iterations, Newton mesh terrain
+with 5–35 cm stairs, per-joint action scales and left-right data augmentation. It preserves the
+original training torque limits (including 20 N·m at the ankles), rather than substituting hardware
+limits. Use ``--seed 42``, ``43`` or ``44`` for the original seeds.
+
+
 Distilling the Depth Student
 ----------------------------
 
@@ -77,6 +83,16 @@ a camera placed where the hardware's RealSense sits.
 ``teacher`` the privileged one. ``rsl_rl`` splits observation groups by rank, sends the rank-4
 depth group through a convolutional encoder, and concatenates the latent with the 1D groups before
 the MLP.
+
+
+Distillation starts a new student for 24000 iterations. The teacher observation is noise-free;
+the student normalizes five frames per proprioceptive term. A second, reflected camera supplies
+mirror augmentation during training only. PPO checkpoints load only the teacher, without restoring
+student parameters, optimizer state or iteration. Compare the 8000, 16000 and 24000 iteration
+checkpoints; more iterations did not consistently improve the original students.
+
+These defaults reproduce the height35 recipe. The current Newton and RSL-RL versions differ from
+the original runs, so matching the recipe does not establish identical trajectories or trained policies.
 
 
 Exporting the Pipeline
