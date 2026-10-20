@@ -1,5 +1,5 @@
-Training a G1 Locomotion Policy with Visual Information for Real Robot Deployment
-=================================================================================
+Training a G1 Visual Locomotion Policy for Real Robot Deployment
+================================================================
 
 .. currentmodule:: isaaclab
 
