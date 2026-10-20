@@ -19,8 +19,8 @@ continues from there onto hardware. The inference stage is unchanged — it is t
 
 .. code-block:: text
 
-   1. train      Isaac-Velocity-Rough-G1-29Dof-AirTime100-MjlabScale-Sym
-   2. distill    Isaac-Velocity-Rough-G1-29Dof-AirTime100-Yms-DepthDistill
+   1. train      Isaac-Velocity-Rough-G1-Teacher
+   2. distill    Isaac-Velocity-Rough-G1-Depth-Student
    3. export     pipeline .yaml + .onnx + _initial_values.safetensors
    4. deploy     scripts/reinforcement_learning/g1_deploy.py
 
@@ -49,10 +49,15 @@ neither, which is why the second stage exists.
 .. code-block:: bash
 
    uv run isaaclab train --rl_library rsl_rl \
-       --task Isaac-Velocity-Rough-G1-29Dof-AirTime100-MjlabScale-Sym
+       --task Isaac-Velocity-Rough-G1-Teacher
 
-The ``MjlabScale`` environment gives each joint its own action scale, and ``-Sym`` adds left-right
-mirror augmentation through ``G1RoughSymmetryPPORunnerCfg``.
+The teacher runs on ``g1_29dof.usd``, not on the ``G1_MINIMAL_CFG`` the stock
+``Isaac-Velocity-Rough-G1`` task uses. That asset comes from a superseded URDF whose waist is a
+single ``torso_joint`` and whose forearm is ``elbow_pitch``/``elbow_roll``; the hardware has a
+three-axis waist, one elbow and three wrist joints, and none of those names exist on the old
+model. A reward term whose joint regex matches nothing is silently inert, so the mismatch does not
+raise -- it just trains a different robot. ``G1RoughTeacherEnvCfg`` swaps the asset and respells
+the joint names of every reward that referred to the old ones.
 
 
 Distilling the Depth Student
@@ -61,7 +66,7 @@ Distilling the Depth Student
 .. code-block:: bash
 
    uv run isaaclab train --rl_library rsl_rl \
-       --task Isaac-Velocity-Rough-G1-29Dof-AirTime100-Yms-DepthDistill \
+       --task Isaac-Velocity-Rough-G1-Depth-Student \
        --checkpoint <TEACHER_CHECKPOINT>
 
 The student runs in the teacher's own environment and drops the privileged observation terms. In
@@ -80,7 +85,7 @@ Exporting the Pipeline
 .. code-block:: bash
 
    uv run --extra leapp isaaclab leapp export --rl_library rsl_rl \
-       --task Isaac-Velocity-Rough-G1-29Dof-AirTime100-Yms-DepthDistill \
+       --task Isaac-Velocity-Rough-G1-Depth-Student \
        physics=newton_mjwarp
 
 The export declares six inputs and three outputs:

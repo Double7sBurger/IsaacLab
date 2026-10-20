@@ -15,14 +15,20 @@ from collections.abc import Sequence
 
 import torch
 
+from isaaclab_newton.sim.schemas import NewtonArticulationCfg
+from isaaclab_physx.sim.schemas import PhysxArticulationCfg, PhysxRigidBodyCfg
+
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.assets import ArticulationCfg
 from isaaclab.managers import ManagerTermBase
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import CameraCfg
-from isaaclab.sim import PinholeCameraCfg
+from isaaclab.sim import PinholeCameraCfg, UsdFileCfg
 from isaaclab.utils import configclass, replace
+from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.buffers import CircularBuffer
 from isaaclab.utils.noise import UniformNoiseCfg as Unoise
 
@@ -248,11 +254,113 @@ class G1TeacherObservationsCfg(ObservationsCfg):
     teacher: ObservationsCfg.PolicyCfg = ObservationsCfg.PolicyCfg()
 
 
+G1_29DOF_VELOCITY_CFG = ArticulationCfg(
+    spawn=UsdFileCfg(
+        usd_path=f"{ISAACLAB_NUCLEUS_DIR}/Robots/Unitree/G1/g1_29dof.usd",
+        activate_contact_sensors=True,
+        rigid_props=PhysxRigidBodyCfg(max_depenetration_velocity=1.0),
+        articulation_props=[
+            PhysxArticulationCfg(
+                enabled_self_collisions=False, solver_position_iteration_count=8, solver_velocity_iteration_count=4
+            ),
+            NewtonArticulationCfg(self_collision_enabled=False),
+        ],
+    ),
+    # 0.793 rather than the 0.74 of ``G1_MINIMAL_CFG``: pelvis-to-ankle is 0.743 m on this robot
+    # against 0.687 m on the superseded one, so the lower height buries the feet in the ground
+    # plane and the solver answers by launching the robot upward.
+    init_state=ArticulationCfg.InitialStateCfg(
+        pos=(0.0, 0.0, 0.793),
+        joint_pos={
+            ".*_hip_pitch_joint": -0.20,
+            ".*_knee_joint": 0.42,
+            ".*_ankle_pitch_joint": -0.23,
+            ".*_elbow_joint": 0.87,
+            "left_shoulder_pitch_joint": 0.35,
+            "left_shoulder_roll_joint": 0.16,
+            "right_shoulder_pitch_joint": 0.35,
+            "right_shoulder_roll_joint": -0.16,
+        },
+    ),
+    soft_joint_pos_limit_factor=0.9,
+    # Every torque ceiling is the hardware's, from the official MJCF's ``ctrlrange``. The ankle is
+    # the one that matters: a policy trained against ``G1_MINIMAL_CFG``'s 20 N*m never learns it
+    # has 50, and 20 is not enough to turn on rough terrain.
+    actuators={
+        "legs": ImplicitActuatorCfg(
+            joint_names_expr=[".*_hip_.*", ".*_knee_joint", "waist_yaw_joint"],
+            joint_effort_limit={".*_hip_.*": 88.0, ".*_knee_joint": 139.0, "waist_yaw_joint": 88.0},
+            stiffness={
+                ".*_hip_pitch_joint": 200.0,
+                ".*_hip_roll_joint": 150.0,
+                ".*_hip_yaw_joint": 150.0,
+                ".*_knee_joint": 200.0,
+                "waist_yaw_joint": 200.0,
+            },
+            damping=5.0,
+            armature=0.01,
+        ),
+        "feet": ImplicitActuatorCfg(
+            joint_names_expr=[".*_ankle_.*"], joint_effort_limit=50.0, stiffness=20.0, damping=2.0, armature=0.01
+        ),
+        "waist": ImplicitActuatorCfg(
+            joint_names_expr=["waist_roll_joint", "waist_pitch_joint"],
+            joint_effort_limit=50.0,
+            stiffness=200.0,
+            damping=5.0,
+            armature=0.01,
+        ),
+        "arms": ImplicitActuatorCfg(
+            joint_names_expr=[".*_shoulder_.*", ".*_elbow_joint", ".*_wrist_.*"],
+            joint_effort_limit={
+                ".*_shoulder_.*": 25.0,
+                ".*_elbow_joint": 25.0,
+                ".*_wrist_roll_joint": 25.0,
+                ".*_wrist_pitch_joint": 5.0,
+                ".*_wrist_yaw_joint": 5.0,
+            },
+            stiffness=40.0,
+            damping=10.0,
+            armature=0.01,
+        ),
+        "hands": ImplicitActuatorCfg(
+            joint_names_expr=[".*_hand_.*"], joint_effort_limit=2.45, stiffness=40.0, damping=10.0, armature=0.001
+        ),
+    },
+)
+"""The 29-DoF G1, which is the robot this pipeline deploys onto.
+
+``G1_MINIMAL_CFG`` is built from a superseded URDF: its waist is a single ``torso_joint`` and its
+forearm is ``elbow_pitch``/``elbow_roll``. The hardware names those ``waist_yaw``/``waist_roll``/
+``waist_pitch`` and ``elbow``/``wrist_roll``, and adds wrist pitch and yaw. Body names are
+unchanged, so the height scanner, the base-contact termination and the base-mass event carry over;
+only joint names do not.
+"""
+
+
 @configclass
 class G1RoughTeacherEnvCfg(G1RoughEnvCfg):
-    """The teacher: PPO on the privileged observation."""
+    """The teacher: PPO on the privileged observation, on the 29-DoF asset."""
 
     observations: G1TeacherObservationsCfg = G1TeacherObservationsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        # scene
+        self.scene.robot = replace(G1_29DOF_VELOCITY_CFG, prim_path="{ENV_REGEX_NS}/Robot")
+        # rewards -- the joint names of G1Rewards respelled for this asset. A term whose regex
+        # matches nothing is silently inert, so leaving them alone drops the penalty instead of
+        # raising.
+        self.rewards.joint_deviation_arms.params["asset_cfg"] = SceneEntityCfg(
+            "robot",
+            joint_names=[".*_shoulder_.*_joint", ".*_elbow_joint", ".*_wrist_.*_joint"],
+        )
+        self.rewards.joint_deviation_fingers.params["asset_cfg"] = SceneEntityCfg(
+            "robot", joint_names=[".*_hand_.*_joint"]
+        )
+        self.rewards.joint_deviation_torso.params["asset_cfg"] = SceneEntityCfg(
+            "robot", joint_names=["waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint"]
+        )
 
 
 @configclass
