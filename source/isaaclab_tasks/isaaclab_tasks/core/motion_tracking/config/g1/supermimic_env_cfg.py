@@ -90,6 +90,7 @@ class G1SuperMimicEnvCfg(G1MotionTrackingEnvCfg):
     final_obs_every_step = True
 
     def play_mode(self):
+        self.commands.motion.sampling_mode = "start"
         self.commands.motion.randomize_context = False
         self.commands.motion.pose_range = {}
         self.commands.motion.velocity_range = {}

@@ -48,6 +48,9 @@ class RslRlSuperMimicActorCfg:
     output_gain: float = 0.01
     """Initial decoder output gain; one preserves the default linear initialization."""
 
+    normalize_before_action: bool = True
+    """Update collection moments before selecting the action, rather than afterward."""
+
 
 @configclass
 class RslRlWorldModelCfg:
@@ -94,6 +97,9 @@ class RslRlSuperMimicAlgorithmCfg:
     updates_per_step: float = 0.4
     """Learner iterations accrued per collected environment step."""
 
+    update_schedule: str = "after_warmup"
+    """Accrue update credit after warmup or from the first collected step."""
+
     num_world_model_updates: int = 10
     """Dynamics optimizer steps per learner iteration."""
 
@@ -109,6 +115,9 @@ class RslRlSuperMimicAlgorithmCfg:
     world_model_loss_reduction: str = "sum"
     """Reduce per-position model losses over each replay window by sum or mean."""
 
+    world_model_full_windows: bool = False
+    """Sample complete stored-state sequences without interior resets or external state edits."""
+
     horizon: int = 32
     """Number of imagined policy steps."""
 
@@ -123,6 +132,9 @@ class RslRlSuperMimicAlgorithmCfg:
 
     final_learning_rate_ratio: float = 0.03
     """Final learning rate relative to its initial value."""
+
+    learning_rate_schedule_unit: str = "learner_updates"
+    """Measure schedule progress in learner_updates or env_steps."""
 
     gamma: float = 0.99
     """Reward discount."""
@@ -141,6 +153,9 @@ class RslRlSuperMimicAlgorithmCfg:
 
     critic_bootstrap_clipping: bool = True
     """Cap bootstrap values before constructing critic targets."""
+
+    critic_shuffle_each_epoch: bool = True
+    """Reshuffle each critic epoch instead of reusing one permutation per fit."""
 
     num_warmup_steps: int = 64
     """Stored steps per environment required before learning."""

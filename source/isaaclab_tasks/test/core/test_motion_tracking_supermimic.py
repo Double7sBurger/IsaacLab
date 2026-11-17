@@ -13,6 +13,7 @@ from isaaclab.utils.math import matrix_from_quat
 
 from isaaclab_tasks.core.motion_tracking.config.g1.supermimic_env_cfg import G1SuperMimicEnvCfg
 from isaaclab_tasks.core.motion_tracking.config.g1.tracking_env_cfg import G1MotionTrackingEnvCfg
+from isaaclab_tasks.core.motion_tracking.mdp.reset_sampling import ReturnSampler, ReturnSamplerCfg
 from isaaclab_tasks.core.motion_tracking.mdp.supermimic_commands import SuperMimicMotionCommand
 from isaaclab_tasks.core.motion_tracking.supermimic import GenCoordStateRepresentation, MotionTrackingTask
 
@@ -77,3 +78,19 @@ def test_gencoord_loss_supervises_integrated_pose_not_only_velocity():
     torch.testing.assert_close(loss, torch.tensor([1 / 14]))
     loss.sum().backward()
     assert prediction[0].grad[0, 0] < 0
+
+
+def test_return_sampling_distinguishes_falls_from_truncations():
+    """A fallen bin loses its bootstrap; a truncated good bin keeps it and receives fewer resets."""
+    cfg = ReturnSamplerCfg(gamma=0.5, horizon=1)
+    sampler = ReturnSampler(cfg, bin_count=2, frame_count=2, num_envs=2, max_step_reward=1.0)
+    weights = sampler.record(
+        torch.tensor([0, 1]),
+        torch.tensor([0.0, 1.0]),
+        torch.tensor([True, False]),
+        torch.tensor([False, False]),
+        torch.tensor([False, True]),
+    )
+    torch.testing.assert_close(sampler.value, torch.tensor([0.0, 2.0]))
+    torch.testing.assert_close(weights.sum(), torch.tensor(1.0))
+    assert weights[0] > weights[1] and (weights >= 0.25).all()

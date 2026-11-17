@@ -35,7 +35,9 @@ class G1MotionTrackingSuperMimicRunnerCfg(RslRlSuperMimicRunnerCfg):
     experiment_name = "g1_motion_tracking_supermimic"
     clip_actions = None
     obs_groups = {"state": ["state"], "goal": ["goal"], "context": ["context"], "prev_action": ["prev_action"]}
-    actor = RslRlSuperMimicActorCfg(history_length=10, activation="gelu", norm="layer", output_gain=1.0)
+    actor = RslRlSuperMimicActorCfg(
+        history_length=10, activation="gelu", norm="layer", output_gain=1.0, normalize_before_action=False
+    )
     world_model = RslRlWorldModelCfg(
         activation="gelu", normalize_output=False, normalize_context=False, zero_initialize_output=False
     )
@@ -43,12 +45,17 @@ class G1MotionTrackingSuperMimicRunnerCfg(RslRlSuperMimicRunnerCfg):
     algorithm = RslRlSuperMimicAlgorithmCfg(
         task_cfg=RslRlSuperMimicTaskCfg(class_name="isaaclab_tasks.core.motion_tracking.supermimic:MotionTrackingTask"),
         replay_buffer_capacity=4_096_000,
-        world_model_window=7,
+        world_model_window=8,
         world_model_loss_reduction="mean",
-        num_warmup_steps=10,
+        world_model_full_windows=True,
+        num_warmup_steps=9,
         num_world_model_warmup_iterations=0,
-        final_learning_rate_ratio=1.0,
+        update_schedule="from_start",
+        final_learning_rate_ratio=0.03,
+        learning_rate_schedule_unit="env_steps",
         critic_survival_weighting=False,
         critic_bootstrap_clipping=False,
+        critic_shuffle_each_epoch=False,
         max_step_reward=0.1,
+        use_cuda_graph=True,
     )

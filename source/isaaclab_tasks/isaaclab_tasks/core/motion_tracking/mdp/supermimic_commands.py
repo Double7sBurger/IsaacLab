@@ -17,6 +17,7 @@ from isaaclab.utils.datasets import MotionLoader
 
 from .commands import MotionCommand, MotionCommandCfg
 from .kinematics import ArticulationKinematics
+from .reset_sampling import ReturnSamplerCfg
 
 
 class SuperMimicMotionCommand(MotionCommand):
@@ -37,6 +38,7 @@ class SuperMimicMotionCommand(MotionCommand):
             setattr(self.motion, name, torch.cat([getattr(clip, name) for clip in clips]))
         self.motion.time_step_total = sum(clip.time_step_total for clip in clips)
         self.bin_count = int(self.motion.time_step_total * env.step_dt) + 1
+        self.sampling_distribution = torch.full((self.bin_count,), 1 / self.bin_count, device=self.device)
         self.bin_failed_count = torch.zeros(self.bin_count, device=self.device)
         self._current_bin_failed = torch.zeros_like(self.bin_failed_count)
         self.encoder_bias = torch.zeros(self.num_envs, self.robot.num_joints, device=self.device)
@@ -63,6 +65,15 @@ class SuperMimicMotionCommand(MotionCommand):
         """Clamp future targets to the current clip instead of crossing into another motion."""
         return torch.minimum(frames[..., None] + self.future_offsets, self.clip_end(frames)[..., None] - 1)
 
+    def set_sampling_distribution(self, weights):
+        """Apply return-based reset weights and expose their concentration in task metrics."""
+        self.sampling_distribution.copy_(weights)
+        entropy = -(weights * weights.clamp_min(1e-12).log()).sum()
+        self.metrics["sampling_entropy"][:] = entropy / max(math.log(self.bin_count), 1e-12)
+        probability, index = weights.max(0)
+        self.metrics["sampling_top1_prob"][:] = probability
+        self.metrics["sampling_top1_bin"][:] = index.float() / self.bin_count
+
     def _resample_command(self, env_ids):
         ids = torch.arange(self.num_envs, device=self.device)[env_ids]
         if ids.numel() == 0:
@@ -82,11 +93,34 @@ class SuperMimicMotionCommand(MotionCommand):
         view.set_attribute("shape_material_mu", model, wp.from_torch(values))
         physics.add_model_change(ModelFlags.SHAPE_PROPERTIES)
         super()._resample_command(env_ids)
+        # The shared reset writes COM velocity; the motion reference specifies link-origin velocity.
+        self.robot.write_root_link_velocity_to_sim_index(
+            root_velocity=self.robot.data.root_com_vel_w.torch[ids].clone(), env_ids=ids
+        )
+        self.robot.actuators.target_command.set_position_index(value=self.robot.data.joint_pos.torch[ids], env_ids=ids)
+
+    def _adaptive_sampling(self, env_ids):
+        if self.cfg.sampling_mode == "adaptive":
+            super()._adaptive_sampling(env_ids)
+            return
+        ids = torch.arange(self.num_envs, device=self.device)[env_ids]
+        if self.cfg.sampling_mode == "start":
+            starts = torch.cat((self.motion_ends.new_zeros(1), self.motion_ends[:-1]))
+            frames = starts[ids % len(starts)]
+        elif self.cfg.sampling_mode == "uniform":
+            frames = torch.randint(self.motion.time_step_total, (len(ids),), device=self.device)
+        else:
+            bins = torch.multinomial(self.sampling_distribution, len(ids), replacement=True)
+            frames = (
+                (bins + torch.rand(len(ids), device=self.device)) / self.bin_count * self.motion.time_step_total
+            ).long()
+            frames.clamp_max_(self.motion.time_step_total - 1)
+        self.time_steps[ids] = frames
 
     def _update_command(self):
-        ended = self.time_steps >= self.clip_end(self.time_steps) - 1
-        self.time_steps += ~ended
-        self._resample_command(torch.where(ended)[0])
+        self.time_steps.copy_(
+            torch.minimum(self.time_steps + (self._env.episode_length_buf > 0), self.clip_end(self.time_steps) - 1)
+        )
         self._update_reference_alignment()
         self.bin_failed_count.lerp_(self._current_bin_failed, self.cfg.adaptive_alpha)
         self._current_bin_failed.zero_()
@@ -103,6 +137,8 @@ class SuperMimicMotionCommandCfg(MotionCommandCfg):
     context_body: str = "torso_link"
     friction_bodies: tuple[str, ...] = (".*ankle_roll_link",)
     randomize_context: bool = True
+    sampling_mode: str = "return"
+    return_sampler: ReturnSamplerCfg = ReturnSamplerCfg()
 
 
 class BiasedJointPositionAction(JointPositionAction):

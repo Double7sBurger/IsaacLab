@@ -50,24 +50,44 @@ The actor consumes ten proprioceptive frames and a ten-frame reference window
 spaced five control steps apart. Its goal encoder has a 32-dimensional tanh latent;
 encoder and decoder widths are 2048/1024/512/256 with LayerNorm and GELU. Dynamics
 uses three 2048-wide hidden layers; the critic uses 256/128. The configured model
-window contains seven transitions, the imagined policy horizon is 32, and each
+window contains nine stored states and eight transitions, the imagined policy horizon is 32, and each
 learner iteration performs ten model updates and one actor update. Collection
-accrues 0.4 learner iterations per physical step after ten warmup steps. A CLI
+accrues 0.4 learner iterations per physical step, skipping fits until nine states
+are stored. A CLI
 iteration is one physical collection step, not one learner update.
+
+Adam starts at 2e-4 and follows a cosine schedule over 250,000 physical steps,
+ending at 0.03 times the initial rate. Collection adds action noise with standard
+deviation 0.1. CUDA graphs capture learner updates; set
+`agent.algorithm.use_cuda_graph=false` for CPU debugging. The default 4096-environment
+configuration holds 1000 replay states per environment and performs 127,997 learner
+updates over 320,000 physical steps. If changing environment count while preserving
+the data ratio, scale replay capacity and `updates_per_step` with it, or scale the
+learner batch sizes by the same factor.
 
 ## Reproduction scope
 
-The GenCoord integration, integrated-state loss, body tracking objective, soft
-termination and network choices follow HybridRobotics/SuperMimic revision
-`7e94b073940b7a19b9a82ff01e191cfb35c4ba91`, with proprioceptive actor history.
+The reference implementation is HybridRobotics/SuperMimic revision
+`5efbf114e11f725c31d83e217be987c13c0e4ce2`. The training preset follows the
+Isaac Lab adaptation used for the BONES-SEED 320k policy validated on G1:
+GenCoord, proprioceptive history, pure Adam, eight predicted transitions,
+action noise and physical-step cosine decay. These are explicit choices from
+that run, not the unmodified upstream defaults (which include Muon/Adam).
 Motion reward is computed analytically after predicting the successor state.
 The model does not learn reward or termination heads in this configuration.
 
-This integration retains Isaac Lab's Newton simulation and the shared motion
-tracking reset perturbations and failure-rate sampler. The upstream repository
-currently defaults to return-based reset sampling and also provides additional
-representations and mixed-task actors. Replay boundaries, critic minibatch
-reshuffling and runner iteration accounting follow RSL-RL. Consequently this is
-not a claim of bitwise training equivalence or reproduced paper performance.
-Multi-GPU learning remains unsupported by the dependency. Checkpoints from the
-standalone upstream implementation require explicit conversion.
+Complete replay windows are sampled uniformly across eligible environments,
+then across valid starts within each environment. Critic targets use uncapped
+bootstrap values before the final return cap, uniform regression weights and
+one minibatch permutation reused across five epochs. Reset sampling uses measured
+returns with the reference explore/focus/keep mixture. Context includes absolute
+local torso CoM, foot friction and encoder bias. Resets retain the sampled frame
+for the first action, with the same pose and velocity perturbation ranges.
+
+Isaac Lab owns the shared motion-tracking USD and Newton simulation. This is not
+a claim of bitwise simulator equivalence or reproduced paper performance. The
+validated run used two L40 GPUs with 2048 environments per rank; this preset uses
+the same global batch sizes on one device. Multi-GPU learning and rank-local
+motion sharding remain unsupported by the RSL-RL dependency. Additional upstream
+representations and mixed-task actors are outside this task. Standalone checkpoints
+require explicit conversion.

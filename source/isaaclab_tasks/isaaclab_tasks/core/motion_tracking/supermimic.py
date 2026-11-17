@@ -21,6 +21,8 @@ from isaaclab.utils.math import (
     yaw_quat,
 )
 
+from .mdp.reset_sampling import ReturnSampler
+
 
 class GenCoordStateRepresentation:
     """Predict velocity increments and integrate root pose and joint angles at the policy rate."""
@@ -105,7 +107,7 @@ def reference_phase(env):
 
 def physical_context(env):
     command = env.command_manager.get_term("motion")
-    return torch.cat((command.friction, command.com - command.nominal_com, command.encoder_bias), -1)
+    return torch.cat((command.friction, command.com, command.encoder_bias), -1)
 
 
 def motion_finished(env):
@@ -183,6 +185,7 @@ class MotionTrackingTask(DifferentiableTask):
 
     def __init__(self, env, device="cpu"):
         owner = env.unwrapped
+        self.env = owner
         self.command = owner.command_manager.get_term("motion")
         self.motion = self.command.motion
         self.kinematics = self.command.kinematics
@@ -202,6 +205,30 @@ class MotionTrackingTask(DifferentiableTask):
         self.context_scale = torch.tensor([0.45, 0.025, 0.05, 0.05] + [0.01] * self.num_joints, device=device)
         self.enable_noise = owner.cfg.commands.motion.randomize_context
         self.gravity = torch.tensor([0.0, 0.0, -1.0], device=device)
+        self.return_sampler = (
+            ReturnSampler(
+                self.command.cfg.return_sampler,
+                self.command.bin_count,
+                self.motion.time_step_total,
+                owner.num_envs,
+                max_step_reward=5.0 * self.dt,
+                device=device,
+            )
+            if self.command.cfg.sampling_mode == "return"
+            else None
+        )
+
+    def process_env_step(self, goal, rewards, dones, extras):
+        if self.return_sampler is None:
+            return
+        manager = self.env.termination_manager
+        truncated = manager.time_outs
+        clip_end = manager.get_term("motion_end")
+        weights = self.return_sampler.record(
+            goal[:, 0].long(), rewards, manager.terminated & ~truncated, clip_end, truncated & ~clip_end
+        )
+        if weights is not None:
+            self.command.set_sampling_distribution(weights)
 
     def actor_obs(self, state: State, goal, context, prev_actions):
         p, q, joints, v, w, speeds = state
