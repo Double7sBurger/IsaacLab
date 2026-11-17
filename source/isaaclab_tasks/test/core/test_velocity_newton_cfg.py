@@ -99,6 +99,7 @@ def test_g1_differentiable_velocity_matches_reward_and_termination_managers():
     and policy-resolution clock advancement are separate model approximations.
     """
     import gymnasium as gym
+    from rsl_rl.utils import CudaGraphCallable
 
     from isaaclab.app import launch_simulation
 
@@ -147,6 +148,17 @@ def test_g1_differentiable_velocity_matches_reward_and_termination_managers():
                         predicted, reference, atol=approximation_tolerances.get(name, 1e-6), rtol=1e-5
                     )
                 torch.testing.assert_close(task.termination_prob(successor, goal, final["labels"]), terminated.float())
+
+            def differentiable_heads():
+                labels = final["labels"].clone().requires_grad_()
+                reward = task.reward(state, actions, successor, goal, history, labels)
+                termination = task.termination_prob(successor, goal, labels)
+                gradient = torch.autograd.grad((reward + termination).sum(), labels)[0]
+                return {"reward": reward, "termination": termination, "gradient": gradient}
+
+            expected = differentiable_heads()
+            captured_heads = CudaGraphCallable(differentiable_heads, task.device, num_warmup=0)
+            torch.testing.assert_close(captured_heads(), expected, rtol=0, atol=0)
             # A positive physical contact prevents an always-zero termination
             # head from passing the otherwise mostly upright transition sample.
             robot = env.unwrapped.scene["robot"]
