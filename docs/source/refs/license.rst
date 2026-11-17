@@ -16,7 +16,9 @@ Third-party dependency license texts are collected under ``docs/licenses/depende
 
 The G1 motion-tracking task includes adapted third-party code and converted reference
 motions. Their sources, modifications and license notices are recorded in
-``docs/licenses/dependencies/motion-tracking-license.txt``.
+``docs/licenses/dependencies/motion-tracking-license.txt``. The SuperMimic objective
+and state integration additionally carry the notices in
+``docs/licenses/dependencies/supermimic-license.txt``.
 
 
 .. code-block:: text

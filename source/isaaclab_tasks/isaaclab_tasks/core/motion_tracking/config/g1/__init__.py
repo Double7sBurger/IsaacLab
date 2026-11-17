@@ -19,3 +19,14 @@ gym.register(
         "default_agent": "rsl_rl",
     },
 )
+
+gym.register(
+    id="Isaac-Motion-Tracking-G1-SuperMimic",
+    entry_point="isaaclab_tasks.core.motion_tracking.motion_tracking_env:MotionTrackingEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.supermimic_env_cfg:G1SuperMimicEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_supermimic_cfg:G1MotionTrackingSuperMimicRunnerCfg",
+        "default_agent": "rsl_rl",
+    },
+)
