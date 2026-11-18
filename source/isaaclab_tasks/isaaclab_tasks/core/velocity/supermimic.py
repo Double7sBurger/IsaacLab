@@ -165,6 +165,7 @@ class VelocityTask(DifferentiableTask):
         for cfg in self.terminations.values():
             if cfg.func.__name__ != "illegal_contact" or cfg.params["threshold"] != 1:
                 raise ValueError("VelocityTask currently supports the shared 1 N illegal-contact termination.")
+        self.sensor_foot_ids = torch.tensor(self.sensor_foot_ids, device=device)
         if len(owner.action_manager.active_terms) != 1:
             raise ValueError("VelocityTask requires one joint-position action term.")
         action = owner.action_manager.get_term(owner.action_manager.active_terms[0])
@@ -263,7 +264,8 @@ class VelocityTask(DifferentiableTask):
         contacts = labels[..., self.num_feet : self.num_feet + self.num_bodies]
         for cfg in self.terminations.values():
             ids = cfg.params["sensor_cfg"].body_ids
-            survival = survival * (1 - contacts[..., ids]).prod(-1)
+            for contact in contacts[..., ids].unbind(-1):
+                survival = survival * (1 - contact)
         return 1 - survival
 
     def reward_terms(
@@ -333,7 +335,7 @@ class VelocityTask(DifferentiableTask):
                 contact = labels[..., : self.num_feet]
                 # Probability of exactly one stance foot, valid for soft labels.
                 single = sum(
-                    contact[..., i] * torch.cat((1 - contact[..., :i], 1 - contact[..., i + 1 :]), -1).prod(-1)
+                    contact[..., i] * math.prod(1 - contact[..., j] for j in range(self.num_feet) if j != i)
                     for i in range(self.num_feet)
                 )
                 in_mode = contact * next_state[8] + (1 - contact) * next_state[7]

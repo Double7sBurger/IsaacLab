@@ -39,6 +39,18 @@ class RslRlSuperMimicActorCfg:
     decoder_hidden_dims: tuple[int, ...] = (2048, 1024, 512, 256)
     """Hidden widths of the history-conditioned action decoder."""
 
+    activation: str = "elu"
+    """Hidden activation for the encoder and decoder."""
+
+    norm: str = "none"
+    """Hidden normalization: none or layer."""
+
+    output_gain: float = 0.01
+    """Initial decoder output gain; one preserves the default linear initialization."""
+
+    normalize_before_action: bool = True
+    """Update collection moments before selecting the action, rather than afterward."""
+
 
 @configclass
 class RslRlWorldModelCfg:
@@ -53,6 +65,18 @@ class RslRlWorldModelCfg:
     label_hidden_dims: tuple[int, ...] = (512, 512)
     """Hidden widths of the optional event-label head."""
 
+    activation: str = "swish"
+    """Hidden dynamics activation."""
+
+    normalize_output: bool = True
+    """Predict standardized increments instead of physical increments."""
+
+    normalize_context: bool = True
+    """Empirically normalize privileged context; disable for task-normalized context."""
+
+    zero_initialize_output: bool = True
+    """Start with a zero residual prediction."""
+
 
 @configclass
 class RslRlSuperMimicAlgorithmCfg:
@@ -64,7 +88,7 @@ class RslRlSuperMimicAlgorithmCfg:
     task_cfg: RslRlSuperMimicTaskCfg = MISSING
     """Differentiable task configured by the environment owner."""
 
-    replay_buffer_size: int = 1_000_000
+    replay_buffer_capacity: int = 1_000_000
     """Replay capacity in transitions across all environments."""
 
     max_replay_memory_fraction: float | None = None
@@ -72,6 +96,9 @@ class RslRlSuperMimicAlgorithmCfg:
 
     updates_per_step: float = 0.4
     """Learner iterations accrued per collected environment step."""
+
+    update_schedule: str = "after_warmup"
+    """Accrue update credit after warmup or from the first collected step."""
 
     num_world_model_updates: int = 10
     """Dynamics optimizer steps per learner iteration."""
@@ -85,6 +112,12 @@ class RslRlSuperMimicAlgorithmCfg:
     world_model_batch_size: int = 2048
     """Replay anchors per dynamics optimizer step."""
 
+    world_model_loss_reduction: str = "sum"
+    """Reduce per-position model losses over each replay window by sum or mean."""
+
+    world_model_full_windows: bool = False
+    """Sample complete stored-state sequences without interior resets or external state edits."""
+
     horizon: int = 32
     """Number of imagined policy steps."""
 
@@ -94,28 +127,40 @@ class RslRlSuperMimicAlgorithmCfg:
     learning_rate: float = 2e-4
     """Initial learning rate of each optimizer."""
 
-    lr_decay_iterations: int = 250_000
+    num_schedule_updates: int = 250_000
     """Learner iterations in the shared cosine learning-rate schedule."""
 
-    lr_final_ratio: float = 0.03
+    final_learning_rate_ratio: float = 0.03
     """Final learning rate relative to its initial value."""
+
+    learning_rate_schedule_unit: str = "learner_updates"
+    """Measure schedule progress in learner_updates or env_steps."""
 
     gamma: float = 0.99
     """Reward discount."""
 
-    gae_lambda: float = 0.95
+    lam: float = 0.95
     """TD(lambda) mixing coefficient for value targets."""
 
-    critic_epochs: int = 5
+    num_critic_epochs: int = 5
     """Epochs per critic fit."""
 
-    critic_minibatches: int = 4
+    num_critic_mini_batches: int = 4
     """Minibatches per critic epoch."""
 
-    warmup_steps: int = 64
+    critic_survival_weighting: bool = True
+    """Weight critic regression by the probability of reaching an imagined state."""
+
+    critic_bootstrap_clipping: bool = True
+    """Cap bootstrap values before constructing critic targets."""
+
+    critic_shuffle_each_epoch: bool = True
+    """Reshuffle each critic epoch instead of reusing one permutation per fit."""
+
+    num_warmup_steps: int = 64
     """Stored steps per environment required before learning."""
 
-    world_model_warmup_iterations: int = 500
+    num_world_model_warmup_iterations: int = 500
     """Learner iterations fitting only dynamics."""
 
     action_noise: float = 0.1
@@ -132,6 +177,9 @@ class RslRlSuperMimicAlgorithmCfg:
 
     use_mixed_precision: bool = False
     """Whether to use BF16 matrix operations during learning."""
+
+    use_cuda_graph: bool = False
+    """Capture learner iterations in CUDA graphs."""
 
     max_grad_norm: float = 1.0
     """Global gradient-norm limit for each model."""
