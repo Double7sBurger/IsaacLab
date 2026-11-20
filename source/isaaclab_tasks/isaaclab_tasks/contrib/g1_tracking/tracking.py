@@ -60,8 +60,18 @@ class RewardCfg:
     term_tilt: float = 0.8
 
 
-def unflatten_state(x: torch.Tensor):
-    return x[..., 0:3], matrix_from_quat(x[..., 3:7]), x[..., 7:10], x[..., 10:13], x[..., 13:42], x[..., 42:71]
+def unflatten_state(x: torch.Tensor, num_joints: int | None = None):
+    num_joints = (x.shape[-1] - 13) // 2 if num_joints is None else num_joints
+    end = 13 + 2 * num_joints
+    state = (
+        x[..., :3],
+        matrix_from_quat(x[..., 3:7]),
+        x[..., 7:10],
+        x[..., 10:13],
+        x[..., 13 : 13 + num_joints],
+        x[..., 13 + num_joints : end],
+    )
+    return state + (x[..., end:],) if x.shape[-1] > end else state
 
 
 class TrackingObjective:
@@ -77,15 +87,19 @@ class TrackingObjective:
         self.velocity_cfg = velocity_cfg if velocity_cfg is not None else VelocityCfg()
         cfg = self.cfg
         self.default_q = default_q
+        self.num_joints = len(default_q)
+        self.obs_dim = 3 * self.num_joints + 12
+        self.goal_dim = 2 * self.num_joints + 15
+        self.xi_dim = self.num_joints + 4
         mid, half = (kin.q_lo + kin.q_hi) / 2, (kin.q_hi - kin.q_lo) / 2
         self.soft_lo, self.soft_hi = mid - half * cfg.soft_limit_factor, mid + half * cfg.soft_limit_factor
 
     # ---------------- observation ----------------
     def obs(self, S, a_prev, xi, f, velocity: bool = False) -> torch.Tensor:
         """Noise-free proprioceptive observation (+ reference-relative root orientation)."""
-        p, R, v, w, q, qd = S
+        p, R, v, w, q, qd = S[:6]
         Rt = R.transpose(-1, -2)
-        dq0 = xi[..., 1:30]
+        dq0 = xi[..., 1 : 1 + self.num_joints]
         g_b = -R[..., 2, :]  # R^T (0,0,-1)
         rel = torch.zeros_like(R[..., :2, :]).flatten(-2) if velocity else mat_to_6d(Rt @ self.motion.root_R[f])
         return torch.cat((q - self.default_q - dq0, qd, (Rt @ w.unsqueeze(-1)).squeeze(-1), g_b, a_prev, rel), -1)
@@ -94,7 +108,7 @@ class TrackingObjective:
     def reward(self, S, f, a, a_prev, terms: bool = False):
         """Reward rate comparing S with reference frame f; the caller applies its step duration."""
         c, m = self.cfg, self.motion
-        p, R, v, w, q, qd = S
+        p, R, v, w, q, qd = S[:6]
         bp, bR, bv, bw = self.kin.forward(p, R, v, w, q, qd)
         rp, rR = m.root_p[f], m.root_R[f]
         # reference bodies re-anchored to the robot's root (xy + yaw), as in BeyondMimic

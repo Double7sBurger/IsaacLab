@@ -17,3 +17,15 @@ gym.register(
         "supermimic_cfg_entry_point": "isaaclab_rl.supermimic.supermimic_cfg:SuperMimicCfg",
     },
 )
+
+for robot in ("AnymalD", "Cassie", "UnitreeGo2", "H1"):
+    gym.register(
+        id=f"IsaacContrib-Motion-Tracking-{robot}",
+        entry_point="isaaclab.envs:ManagerBasedRLEnv",
+        disable_env_checker=True,
+        kwargs={
+            "env_cfg_entry_point": f"{__name__}.robot_tracking_env_cfg:{robot}TrackingEnvCfg",
+            "default_agent": "supermimic",
+            "supermimic_cfg_entry_point": "isaaclab_rl.supermimic.supermimic_cfg:SuperMimicCfg",
+        },
+    )

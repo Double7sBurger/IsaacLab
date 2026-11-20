@@ -26,7 +26,7 @@ BIN_FRAMES = 50  # 1 s bins for return-based reset sampling
 
 def resample_motion(raw: torch.Tensor, src_fps: float):
     """Resample metric/xyzw/radian G1 poses to the control rate using shortest-arc SLERP."""
-    p, quat, j = raw[:, :3], raw[:, 3:7], raw[:, 7:36]
+    p, quat, j = raw[:, :3], raw[:, 3:7], raw[:, 7:]
     # resample to 50 Hz
     T_src = raw.shape[0]
     dur = (T_src - 1) / src_fps
@@ -69,8 +69,9 @@ class MotionLib:
                 np.load(f, allow_pickle=False) if f.suffix == ".npy" else np.loadtxt(f, delimiter=","),
                 dtype=torch.float32,
             )
-            if raw.ndim != 2 or raw.shape[0] < 2 or raw.shape[1] != 36:
-                raise ValueError(f"Motion {f} must contain at least two 36-channel frames.")
+            width = 7 + len(kin.q_lo)
+            if raw.ndim != 2 or raw.shape[0] < 2 or raw.shape[1] != width:
+                raise ValueError(f"Motion {f} must contain at least two {width}-channel frames.")
             if not torch.isfinite(raw).all() or (raw[:, 3:7].norm(dim=-1) < 1e-6).any():
                 raise ValueError(f"Motion {f} contains nonfinite values or invalid quaternions.")
             if src_fps == 1.0 / CONTROL_DT:

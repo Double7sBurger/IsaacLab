@@ -33,13 +33,12 @@ from isaaclab_tasks.contrib.g1_tracking.g1_tracking_env_cfg import (
 from isaaclab_tasks.contrib.g1_tracking.tracking import (
     MAX_REWARD_RATE,
     MAX_VELOCITY_REWARD_RATE,
-    OBS_DIM,
     unflatten_state,
 )
 from isaaclab_tasks.utils import resolve_task_config, setup_preset_cli
 
 from ...supermimic.learner import Learner
-from ...supermimic.networks import WM_IN, WM_OUT, WorldModel
+from ...supermimic.networks import WorldModel
 from ..common import (
     add_common_train_args,
     apply_env_overrides,
@@ -166,7 +165,7 @@ def run(argv: list[str]) -> None:
 def _configure_training(args, env_cfg, agent_cfg):
     """Apply native overrides and validate that real and imagined task semantics agree."""
     if not isinstance(env_cfg, G1TrackingEnvCfg):
-        raise ValueError("SuperMimic currently requires the G1 motion-tracking task's analytical objective.")
+        raise ValueError("SuperMimic requires a native motion-tracking task with its analytical objective.")
     apply_env_overrides(args, env_cfg)
     if args.seed is not None:
         agent_cfg.seed = resolve_seed(args.seed)
@@ -226,6 +225,8 @@ def _configure_training(args, env_cfg, agent_cfg):
         raise ValueError("The training-hour budget must be finite and positive.")
     if agent_cfg.amp not in ("none", "bf16") or agent_cfg.world_model not in ("mlp", "nerd-one-frame"):
         raise ValueError("Select amp=none/bf16 and world_model=mlp/nerd-one-frame.")
+    if agent_cfg.mdp_heads not in ("analytic", "learned"):
+        raise ValueError("Select mdp_heads=analytic/learned.")
     if env_cfg.sim.dt * env_cfg.decimation != 0.02:
         raise ValueError("The reference motions and world model require a 20 ms control period.")
     # The same analytical observations are used inside imagined rollouts. Reject changes that
@@ -310,17 +311,23 @@ def _train(env, agent_cfg, output, resumed, run, metadata):
             )
             noise_terms.append((slice(offset, offset + shape[-1]), fn, noise))
             offset += shape[-1]
-        if offset != OBS_DIM or int(command.motion.clip_len.max()) <= agent_cfg.horizon:
+        if offset != command.mdp.obs_dim or int(command.motion.clip_len.max()) <= agent_cfg.horizon:
             raise ValueError("Observation width or motion lengths are incompatible with the learner.")
         network = None
         if agent_cfg.world_model == "nerd-one-frame":
             from physicsnemo_robotics.models.parallel_nerd import ParallelNeRD
 
-            network = ParallelNeRD(WM_IN, WM_OUT, temporal_attention_spans=(1, 1, 1, 1))
+            network = ParallelNeRD(
+                17 + 4 * command.num_joints + command.auxiliary_dim,
+                12 + 2 * command.num_joints + command.auxiliary_dim,
+                temporal_attention_spans=(1, 1, 1, 1),
+            )
             torch.nn.init.zeros_(network.head_output.weight)
             torch.nn.init.zeros_(network.head_output.bias)
         dtype = torch.bfloat16 if agent_cfg.amp == "bf16" else None
-        world_model = WorldModel(network=network, amp_dtype=dtype).to(native_env.device)
+        world_model = WorldModel(
+            network=network, amp_dtype=dtype, num_joints=command.num_joints, auxiliary_dim=command.auxiliary_dim
+        ).to(native_env.device)
         learner = Learner(
             agent_cfg,
             command.mdp,
@@ -381,6 +388,10 @@ def _train(env, agent_cfg, output, resumed, run, metadata):
                     for name in ("pi_loss", "v_loss", "imagined_reward", "survival", "alignment_loss")
                 }
             )
+        head_metrics = (
+            ("wm_reward_loss", "wm_observation_loss", "wm_termination_loss") if learner.wm.heads is not None else ()
+        )
+        aggregate.update({name: [] for name in head_metrics})
         columns = (
             "iteration",
             "wall_h",
@@ -419,9 +430,11 @@ def _train(env, agent_cfg, output, resumed, run, metadata):
                     loss, error = learner.wm_update()
                 aggregate["wm_loss"].append(loss)
                 aggregate["wm_last_error"].append(error)
+                updates = dict(zip(head_metrics, learner.head_losses, strict=True))
                 if iteration >= agent_cfg.world_model_only_iterations:
-                    for name, value in learner.policy_update().items():
-                        aggregate[name].append(value)
+                    updates.update(learner.policy_update())
+                for name, value in updates.items():
+                    aggregate[name].append(value)
                 if (iteration + 1) % agent_cfg.log_interval == 0:
                     means = [float(torch.stack(values).mean()) if values else 0.0 for values in aggregate.values()]
                     totals = {
@@ -457,7 +470,7 @@ def _train(env, agent_cfg, output, resumed, run, metadata):
                     if run:
                         run.log(dict(zip(columns, row, strict=True)))
                     print(
-                        f"Iteration {iteration + 1}: dynamics={means[0]:.4f}, policy={means[2]:.4f}, "
+                        f"Iteration {iteration + 1}: world_model={means[0]:.4f}, policy={means[2]:.4f}, "
                         f"value={means[3]:.4f}, hours={wall_h:.3f}",
                         flush=True,
                     )

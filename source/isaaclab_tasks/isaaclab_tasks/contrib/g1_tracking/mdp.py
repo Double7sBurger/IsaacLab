@@ -20,9 +20,9 @@ from isaaclab.envs.mdp.actions import JointPositionAction
 from isaaclab.managers import CommandTerm, RecorderTerm
 from isaaclab.utils.math import matrix_from_quat, quat_from_matrix
 
-from .kinematics import G1_JOINT_NAMES, G1Kinematics, mat_to_6d, so3_exp
+from .kinematics import G1_JOINT_NAMES, ArticulationKinematics, G1Kinematics, mat_to_6d, so3_exp
 from .motion import BIN_FRAMES, MotionLib
-from .tracking import MAX_REWARD_RATE, MAX_VELOCITY_REWARD_RATE, STATE_DIM, TrackingObjective
+from .tracking import MAX_REWARD_RATE, MAX_VELOCITY_REWARD_RATE, TrackingObjective
 
 
 class MotionCommand(CommandTerm):
@@ -48,22 +48,37 @@ class MotionCommand(CommandTerm):
                 "Velocity commands require a positive resampling interval and three finite ordered ranges."
             )
         self.robot = env.scene["robot"]
-        if list(self.robot.joint_names) != G1_JOINT_NAMES:
+        names = G1_JOINT_NAMES if cfg.joint_names is None else cfg.joint_names
+        if list(self.robot.joint_names) != names:
             raise ValueError(f"The tracking asset must preserve the motion joint order: {self.robot.joint_names}")
-        self.kin = G1Kinematics(cfg.kinematics_path, self.device)
+        self.num_joints = len(names)
+        if cfg.joint_names is None:
+            self.kin = G1Kinematics(cfg.kinematics_path, self.device)
+        else:
+            if not cfg.tracked_bodies or cfg.velocity.fraction:
+                raise ValueError("A custom articulation requires tracked bodies and the motion-only interface.")
+            self.kin = ArticulationKinematics(cfg.kinematics_path, self.device, names, cfg.tracked_bodies)
+        self.physics = env.sim.backend_manager
+        self._actuator_states = []
+        for actuator in self.robot.actuators.values():
+            for field in ("sea_hidden_state_per_env", "sea_cell_state_per_env"):
+                state = getattr(actuator, field, None)
+                if state is not None:
+                    self._actuator_states.append((actuator, field))
+        self._native_actuators = getattr(self.physics.backend, "actuators", None)
+        self.auxiliary_dim = self.actuator_state().shape[-1]
         self.motion = MotionLib(cfg.motion_dir, self.kin, self.device, cfg.source_fps)
         self.mdp = TrackingObjective(
             self.kin, self.motion, self.robot.data.default_joint_pos.torch[0].clone(), cfg.objective, cfg.velocity
         )
-        self.physics = env.sim.backend_manager
         self.robot_view = self.robot.root_view
-        self.torso_id = self.robot.find_bodies("torso_link")[0][0]
+        self.torso_id = self.robot.find_bodies(cfg.context_body)[0][0]
         self.env_ids = torch.arange(self.num_envs, device=self.device)
         self.num_velocity_envs = round(self.num_envs * cfg.velocity.fraction)
         self.is_velocity = self.env_ids >= self.num_envs - self.num_velocity_envs
         self.velocity_command = torch.zeros(self.num_envs, 3, device=self.device)
         self.velocity_reference = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.xi = torch.zeros(self.num_envs, 33, device=self.device)
+        self.xi = torch.zeros(self.num_envs, self.num_joints + 4, device=self.device)
         self.start_frame = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.start_bin = torch.zeros_like(self.start_frame)
         self._accounted_step = torch.zeros_like(self.start_frame)
@@ -71,7 +86,7 @@ class MotionCommand(CommandTerm):
         self.discounted_return = torch.zeros_like(self.episode_return)
         self.bin_return = torch.zeros(self.motion.num_bins, device=self.device)
         self.bin_weight = torch.full_like(self.bin_return, 1.0 / self.motion.num_bins)
-        self._command = torch.zeros(self.num_envs, 73 * cfg.goal_frames, device=self.device)
+        self._command = torch.zeros(self.num_envs, self.mdp.goal_dim * cfg.goal_frames, device=self.device)
         self.metrics = {
             "return": torch.zeros_like(self.episode_return),
             "length": torch.zeros_like(self.episode_return),
@@ -95,6 +110,34 @@ class MotionCommand(CommandTerm):
             velocity[:, 3:],
             data.joint_pos.torch,
             data.joint_vel.torch,
+        )
+
+    def actuator_state(self):
+        """Recurrent actuator state in environment-major order, for dynamics and the privileged critic."""
+        values = [getattr(actuator, field) for actuator, field in self._actuator_states]
+        if self._native_actuators is not None:
+            # Newton swaps state buffers on every step; read the current input buffers, not cached aliases.
+            for state in self._native_actuators._states_a:
+                if state is None:
+                    continue
+                if state.delay_state is not None:
+                    raise ValueError("Delayed actuator state is not supported by the tracking world model.")
+                drive = state.drive_state
+                if drive is not None:
+                    if not hasattr(drive, "hidden") or not hasattr(drive, "cell"):
+                        raise ValueError(f"Unsupported stateful actuator drive: {type(drive).__name__}.")
+                    values.extend((drive.hidden, drive.cell))
+        tensors = [value if isinstance(value, torch.Tensor) else wp.to_torch(value) for value in values]
+        return (
+            torch.cat(
+                [
+                    value.reshape(value.shape[0], self.num_envs, -1).transpose(0, 1).reshape(self.num_envs, -1)
+                    for value in tensors
+                ],
+                -1,
+            )
+            if tensors
+            else torch.empty(self.num_envs, 0, device=self.device)
         )
 
     def _account_reward(self, env_ids):
@@ -198,7 +241,7 @@ class MotionCommand(CommandTerm):
         self.episode_return[ids] = 0
         self.discounted_return[ids] = 0
         if not self.cfg.evaluation:
-            self.xi[ids, 1:30] = torch.empty(n, 29, device=self.device).uniform_(-0.01, 0.01)
+            self.xi[ids, 1:-3] = torch.empty(n, self.num_joints, device=self.device).uniform_(-0.01, 0.01)
         # The native environment clears episode_length_buf after manager resets.
         self._command[ids] = motion.goal(frames, self.cfg.goal_frames)
 
@@ -210,7 +253,7 @@ class ContextJointPositionAction(JointPositionAction):
 
     def process_actions(self, actions):
         super().process_actions(actions)
-        self._processed_actions.add_(self.motion.xi[:, 1:30])
+        self._processed_actions.add_(self.motion.xi[:, 1:-3])
 
 
 def randomize_context(env, env_ids):
@@ -219,13 +262,11 @@ def randomize_context(env, env_ids):
         command.xi[:, 0] = 1.0
     else:
         command.xi[:, 0].uniform_(0.3, 1.2)
-        command.xi[:, 30:33] = torch.empty(env.num_envs, 3, device=env.device).uniform_(-1, 1) * command.xi.new_tensor(
+        command.xi[:, -3:] = torch.empty(env.num_envs, 3, device=env.device).uniform_(-1, 1) * command.xi.new_tensor(
             (0.025, 0.05, 0.05)
         )
         default_com = command.robot.data.body_com_pos_b.torch[:, command.torso_id].clone()
-        command.robot.set_coms_index(
-            coms=(default_com + command.xi[:, 30:33]).unsqueeze(1), body_ids=[command.torso_id]
-        )
+        command.robot.set_coms_index(coms=(default_com + command.xi[:, -3:]).unsqueeze(1), body_ids=[command.torso_id])
     model = command.physics.backend.model
     shape = command.robot_view.get_attribute("shape_material_mu", model).shape
     values = command.xi[:, 0].reshape(env.num_envs, 1, 1).expand(shape).contiguous()
@@ -235,7 +276,7 @@ def randomize_context(env, env_ids):
 
 def joint_pos_rel(env):
     command = env.command_manager.get_term("motion")
-    return command.robot.data.joint_pos.torch - command.mdp.default_q - command.xi[:, 1:30]
+    return command.robot.data.joint_pos.torch - command.mdp.default_q - command.xi[:, 1:-3]
 
 
 def relative_orientation(env):
@@ -299,11 +340,13 @@ class TransitionRecorder(RecorderTerm):
         super().__init__(cfg, env)
         self.motion = env.command_manager.get_term("motion")
         self.robot = self.motion.robot
+        self.num_joints = self.motion.num_joints
+        state_dim = 13 + 2 * self.num_joints + self.motion.auxiliary_dim
         self.latest = {
-            "s": torch.empty(self.num_envs, STATE_DIM, device=self.device),
-            "s1": torch.empty(self.num_envs, STATE_DIM, device=self.device),
-            "a": torch.empty(self.num_envs, 29, device=self.device),
-            "a_prev": torch.empty(self.num_envs, 29, device=self.device),
+            "s": torch.empty(self.num_envs, state_dim, device=self.device),
+            "s1": torch.empty(self.num_envs, state_dim, device=self.device),
+            "a": torch.empty(self.num_envs, self.num_joints, device=self.device),
+            "a_prev": torch.empty(self.num_envs, self.num_joints, device=self.device),
             "xi": torch.empty_like(self.motion.xi),
             "f": torch.empty(self.num_envs, dtype=torch.long, device=self.device),
             "ep_step": torch.empty(self.num_envs, dtype=torch.int32, device=self.device),
@@ -324,8 +367,11 @@ class TransitionRecorder(RecorderTerm):
         target[:, :7].copy_(data.root_link_pose_w.torch)
         target[:, :3].sub_(self._env.scene.env_origins)
         target[:, 7:13].copy_(data.root_link_vel_w.torch)
-        target[:, 13:42].copy_(data.joint_pos.torch)
-        target[:, 42:71].copy_(data.joint_vel.torch)
+        end = 13 + 2 * self.num_joints
+        target[:, 13 : 13 + self.num_joints].copy_(data.joint_pos.torch)
+        target[:, 13 + self.num_joints : end].copy_(data.joint_vel.torch)
+        if self.motion.auxiliary_dim:
+            target[:, end:].copy_(self.motion.actuator_state())
 
     def record_pre_step(self):
         self._capture_state(self.latest["s"])

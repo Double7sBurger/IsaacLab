@@ -113,6 +113,35 @@ Observation history, stateless policy noise and task reward parameters remain co
 The runner rejects incompatible observation functions or layouts instead of silently optimizing
 a different imagined task.
 
+Learned MDP heads
+~~~~~~~~~~~~~~~~~
+
+Set ``agent.mdp_heads=learned`` to learn the reward, noise-free observation and failure
+probability together with dynamics. The default, ``agent.mdp_heads=analytic``, retains the
+analytical functions. This choice is independent of the ``agent.world_model`` architecture
+and supports both motion tracking and joint motion/velocity training.
+
+The learned heads use heading-invariant state and reference-relative features. An observation
+MLP predicts proprioception; a second MLP outputs normalized reward and a termination logit.
+Both have two hidden layers of width 256. Training uses the same autoregressive replay windows
+as dynamics, with reward and observation squared errors and binary cross-entropy for failure.
+Reward labels and hard failure labels come from physical transitions before reset. Observation
+targets are reconstructed without sensor noise from those recorded states. Clip endings and
+time limits mask replay boundaries but are not failure labels. The task's existing observation
+layout and objective restrictions still apply.
+
+In imagined rollouts, the learned outputs replace the analytical heads and sensor noise is
+added after observation prediction. Initial observation history still comes from recorded
+states. The heads are frozen with dynamics during actor updates, while gradients flow through
+their inputs. Checkpoints include their parameters, normalization and optimizer state; policy
+playback continues to use physical observations and rewards.
+
+Logs add ``wm_reward_loss``, ``wm_observation_loss`` and ``wm_termination_loss``. These are
+masked per-window averages, with reward normalized by the maximum per-step reward and
+observation error standardized per component. ``wm_loss`` includes these terms in learned mode;
+``wm_last_error`` remains the dynamics-only final-step error. This optional implementation
+does not establish a tracking-performance advantage over analytical heads.
+
 Joint motion and velocity training
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

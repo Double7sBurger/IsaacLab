@@ -12,19 +12,17 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
+from isaaclab_tasks.contrib.g1_tracking.kinematics import mat_to_6d, yaw_mat
 from isaaclab_tasks.contrib.g1_tracking.tracking import (
     MAX_REWARD_RATE,
     MAX_VELOCITY_REWARD_RATE,
-    OBS_DIM,
-    XI_DIM,
-    unflatten_state,
 )
 
 from .networks import (
-    CRITIC_EXTRA,
-    INV_DIM,
     Critic,
+    LearnedMDP,
     Policy,
     WorldModel,
     critic_features,
@@ -39,17 +37,24 @@ from .supermimic_cfg import SuperMimicCfg
 class ReplayBuffer:
     """Learner-owned time/world ring; sampled model windows cannot cross physical discontinuities."""
 
-    def __init__(self, capacity: int, transition: dict[str, torch.Tensor]):
+    def __init__(self, capacity: int, transition: dict[str, torch.Tensor], *, learned_heads: bool = False):
         if capacity < 1:
             raise ValueError("Replay capacity must be positive.")
         self.capacity, self.size, self.pointer = (capacity, 0, 0)
         self.num_envs, self.device = (transition["s"].shape[0], transition["s"].device)
         fields = ("s", "s1", "a", "a_prev", "xi", "f", "ep_step", "done")
+        self.window_fields = ("s", "s1", "a", "xi", "done")
+        if learned_heads:
+            fields += ("r", "term")
+            self.window_fields += ("a_prev", "f", "r", "term")
         self.envs = (torch.arange(self.num_envs, device=self.device),)
         if "is_velocity" in transition:
             mask = transition["is_velocity"]
             self.envs = ((~mask).nonzero().flatten(), mask.nonzero().flatten())
             fields += ("velocity_command", "velocity_reference")
+            if learned_heads:
+                fields += ("is_velocity",)
+                self.window_fields += ("velocity_command", "is_velocity")
         self.data = {key: transition[key].new_empty((capacity, *transition[key].shape)) for key in fields}
 
     @torch.no_grad()
@@ -68,7 +73,7 @@ class ReplayBuffer:
         start = torch.randint(self.size - length + 1, (batch_size,), device=self.device)
         env = torch.randint(self.num_envs, (batch_size, 1), device=self.device)
         rows = self._row(start[:, None] + torch.arange(length, device=self.device))
-        out = {key: self.data[key][rows, env] for key in ("s", "s1", "a", "xi", "done")}
+        out = {key: self.data[key][rows, env] for key in self.window_fields}
         steps, frames = (self.data["ep_step"][rows, env], self.data["f"][rows, env])
         connected = (
             ~out["done"][:, :-1]
@@ -126,12 +131,29 @@ class Learner:
         self.velocity_batch_size = round(cfg.policy_batch_size * mdp.velocity_cfg.fraction)
         dtype = torch.bfloat16 if cfg.amp == "bf16" else None
         self.wm = world_model
+        self.num_joints = mdp.num_joints
+        if cfg.mdp_heads not in ("analytic", "learned"):
+            raise ValueError("Select mdp_heads=analytic/learned.")
+        if cfg.mdp_heads == "learned":
+            self.wm.heads = LearnedMDP(
+                self.wm.invariant_dim + mdp.goal_dim + 4, mdp.obs_dim, self.num_joints, mdp.xi_dim, dtype
+            ).to(self.device)
         self.pi = Policy(
-            OBS_DIM, 73 * goal_frames, hist=history, amp_dtype=dtype, velocity=self.velocity_batch_size > 0
+            mdp.obs_dim,
+            mdp.goal_dim * goal_frames,
+            hist=history,
+            amp_dtype=dtype,
+            velocity=self.velocity_batch_size > 0,
+            num_actions=self.num_joints,
         ).to(self.device)
-        self.critic = Critic(INV_DIM + CRITIC_EXTRA + 73 * goal_frames, amp_dtype=dtype).to(self.device)
+        critic_extra = self.num_joints + self.motion.body_p.shape[-2] * 3 + 9 + mdp.xi_dim
+        self.critic = Critic(self.wm.invariant_dim + critic_extra + mdp.goal_dim * goal_frames, amp_dtype=dtype).to(
+            self.device
+        )
         self.velocity_critic = (
-            Critic(INV_DIM + XI_DIM + 3, amp_dtype=dtype).to(self.device) if self.velocity_batch_size else None
+            Critic(self.wm.invariant_dim + mdp.xi_dim + 3, amp_dtype=dtype).to(self.device)
+            if self.velocity_batch_size
+            else None
         )
         self.opt_wm = torch.optim.Adam(self.wm.parameters(), lr=cfg.learning_rate)
         self.opt_pi = torch.optim.Adam(self.pi.parameters(), lr=cfg.learning_rate, betas=(0.9, 0.95))
@@ -139,19 +161,22 @@ class Learner:
         if self.velocity_critic is not None:
             critic_parameters.extend(self.velocity_critic.parameters())
         self.opt_v = torch.optim.Adam(critic_parameters, lr=cfg.learning_rate)
-        self.buffer = ReplayBuffer(cfg.buffer_steps, transition)
+        self.buffer = ReplayBuffer(cfg.buffer_steps, transition, learned_heads=self.wm.heads is not None)
+        self.head_losses = torch.zeros(3 if self.wm.heads is not None else 0, device=self.device)
         self.error_floor = torch.cat(
             (
                 torch.full((3,), 0.003),
                 torch.full((3,), 0.005),
                 torch.full((3,), 0.02),
                 torch.full((3,), 0.05),
-                torch.full((29,), 0.003),
-                torch.full((29,), 0.05),
+                torch.full((self.num_joints,), 0.003),
+                torch.full((self.num_joints,), 0.05),
+                torch.full((self.wm.auxiliary_dim,), 0.01),
             )
         ).to(self.device)
         self.rollout = torch.compile(self._wm_rollout, disable=not cfg.compile)
         self.error = torch.compile(self._wm_err, disable=not cfg.compile)
+        self.head_error = torch.compile(self._head_loss, disable=not cfg.compile)
         self.imagine = torch.compile(self._imag_step, disable=not cfg.compile)
         self.reward_termination = torch.compile(self._reward_term, disable=not cfg.compile)
         self.critic_input_compiled = torch.compile(self._critic_input, disable=not cfg.compile)
@@ -173,7 +198,7 @@ class Learner:
             tracking, velocity = self.buffer.envs
             command = observations["interface"][velocity, 1:]
             self.pi.velocity_norm.update(command)
-            action = torch.empty(len(tracking) + len(velocity), 29, device=self.device)
+            action = torch.empty(len(tracking) + len(velocity), self.num_joints, device=self.device)
             action[tracking] = self.pi(observations["policy"][tracking], observations["goal"][tracking])
             action[velocity] = self.pi(observations["policy"][velocity], observations["goal"][velocity], command)
         else:
@@ -183,21 +208,84 @@ class Learner:
     @torch.no_grad()
     def observe(self, transition):
         self.buffer.add(transition)
-        state, successor = (unflatten_state(transition["s"]), unflatten_state(transition["s1"]))
+        state, successor = (self.wm.unpack(transition["s"]), self.wm.unpack(transition["s1"]))
         self.wm.in_norm.update(self.wm.inputs(state, transition["a"], normalize_xi(transition["xi"])))
         self.wm.out_norm.update(state_difference(state, successor))
+        if self.wm.heads is not None:
+            f = transition["f"] + 1
+            features = self._head_inputs(
+                successor, f, transition.get("velocity_command"), transition.get("is_velocity")
+            )
+            observation = self._observation_target(
+                successor, transition["a"], transition["xi"], f, transition.get("is_velocity")
+            )
+            self.wm.heads.in_norm.update(features)
+            self.wm.heads.obs_norm.update(observation)
+
+    def _head_inputs(self, S, f, command=None, is_velocity=None):
+        """Preserve reference-relative root error without dependence on the world's xy/yaw origin."""
+        p, R = S[:2]
+        rp, rR, rv, rw, rq, rqd = self.motion.ref_state(f)
+        Ht = yaw_mat(R).transpose(-1, -2)
+        goal = torch.cat(
+            (
+                (Ht @ (rp - p).unsqueeze(-1)).squeeze(-1),
+                mat_to_6d(Ht @ rR),
+                (Ht @ rv.unsqueeze(-1)).squeeze(-1),
+                (Ht @ rw.unsqueeze(-1)).squeeze(-1),
+                rq,
+                rqd,
+            ),
+            -1,
+        )
+        if command is None:
+            interface = goal.new_zeros((*f.shape, 4))
+        else:
+            if is_velocity is None:
+                is_velocity = torch.ones_like(f, dtype=torch.bool)
+            goal = torch.where(is_velocity.unsqueeze(-1), 0.0, goal)
+            interface = torch.cat((is_velocity.unsqueeze(-1), command * is_velocity.unsqueeze(-1)), -1)
+        return torch.cat((invariant_features(S), goal, interface), -1)
+
+    def _observation_target(self, S, action, xi, f, is_velocity=None):
+        observation = self.mdp.obs(S, action, xi, f)
+        if is_velocity is not None:
+            observation = torch.where(
+                is_velocity.unsqueeze(-1), self.mdp.obs(S, action, xi, f, velocity=True), observation
+            )
+        return observation
+
+    def _head_loss(self, S_hat, window):
+        f, action, xi = window["f"] + 1, window["a"], window["xi"]
+        velocity = window.get("is_velocity")
+        features = self._head_inputs(S_hat, f, window.get("velocity_command"), velocity)
+        observation = self.wm.heads.obs(features, action, normalize_xi(xi))
+        reward, termination = self.wm.heads.reward_termination(features, action, window["a_prev"])
+        target = self._observation_target(self.wm.unpack(window["s1"]), action, xi, f, velocity)
+        maximum = (
+            MAX_REWARD_RATE if velocity is None else torch.where(velocity, MAX_VELOCITY_REWARD_RATE, MAX_REWARD_RATE)
+        )
+        errors = torch.stack(
+            (
+                (reward - window["r"] / (maximum * self.reward_scale)).square(),
+                ((observation - target) / self.wm.heads.obs_norm.std()).square().mean(-1),
+                F.binary_cross_entropy_with_logits(termination, window["term"].float(), reduction="none"),
+            ),
+            -1,
+        )
+        return (errors * window["mask"].unsqueeze(-1)).sum((0, 1)) / f.shape[0]
 
     def _wm_rollout(self, s, a, xi):
-        S = unflatten_state(s[:, 0])
+        S = self.wm.unpack(s[:, 0])
         preds = []
         for j in range(self.cfg.world_model_window):
             S = self.wm.step(S, a[:, j], normalize_xi(xi[:, j]))
             preds.append(S)
-        return tuple(torch.stack([P[i] for P in preds], 1) for i in range(6))
+        return tuple(torch.stack([P[i] for P in preds], 1) for i in range(len(S)))
 
     def _wm_err(self, S_hat, s1, mask):
         std = torch.maximum(self.wm.out_norm.std(), self.error_floor)
-        e = (state_difference(unflatten_state(s1), S_hat) / std) ** 2
+        e = (state_difference(self.wm.unpack(s1), S_hat) / std) ** 2
         e = e.mean(-1)
         return ((e * mask).sum() / s1.shape[0], e[:, -1])
 
@@ -205,11 +293,20 @@ class Learner:
         a = self.pi(o_hist, g, command)
         S1 = self.wm.step(S, a, xi_n)
         f1 = f + 1
-        o1 = self.add_noise(self.mdp.obs(S1, a, xi, f1, velocity=command is not None))
+        o1 = (
+            self.mdp.obs(S1, a, xi, f1, velocity=command is not None)
+            if self.wm.heads is None
+            else self.wm.heads.obs(self._head_inputs(S1, f1, command), a, xi_n)
+        )
+        o1 = self.add_noise(o1)
         o_hist = torch.cat((o_hist[:, 1:], o1.unsqueeze(1)), 1)
         return (S1, a, o_hist, f1, self.motion.goal(f1, self.goal_frames))
 
     def _reward_term(self, S, f, a, a_prev, command=None):
+        if self.wm.heads is not None:
+            reward, termination = self.wm.heads.reward_termination(self._head_inputs(S, f, command), a, a_prev)
+            maximum = MAX_REWARD_RATE if command is None else MAX_VELOCITY_REWARD_RATE
+            return reward * (maximum * self.reward_scale), termination.sigmoid()
         if command is not None:
             return (
                 self.reward_scale * self.mdp.velocity_reward(S, command, a, a_prev),
@@ -226,6 +323,10 @@ class Learner:
         w = self.buffer.sample_windows(self.cfg.world_model_batch_size, self.cfg.world_model_window)
         S_hat = self.rollout(w["s"], w["a"], w["xi"])
         loss, e_last = self.error(S_hat, w["s1"], w["mask"])
+        if self.wm.heads is not None:
+            head_losses = self.head_error(S_hat, w)
+            loss = loss + head_losses.sum()
+            self.head_losses = head_losses.detach() / self.cfg.world_model_window
         self.opt_wm.zero_grad(set_to_none=True)
         loss.backward()
         nn.utils.clip_grad_norm_(self.wm.parameters(), 1.0, error_if_nonfinite=True)
@@ -281,11 +382,11 @@ class Learner:
     def _interface_update(self, velocity: bool, B: int):
         """Backpropagate one interface's return and fit its critic on the same detached rollout."""
         s, h = self.sample_valid_starts(B, velocity)
-        S = unflatten_state(s["s"])
+        S = self.wm.unpack(s["s"])
         xi, f, a_prev = (s["xi"], s["f"], s["a_prev"])
         xi_n = normalize_xi(xi)
         with torch.no_grad():
-            o_hist = self.mdp.obs(unflatten_state(h["s"]), h["a_prev"], h["xi"], h["f"], velocity)
+            o_hist = self.mdp.obs(self.wm.unpack(h["s"]), h["a_prev"], h["xi"], h["f"], velocity)
         o_hist = self.add_noise(o_hist)
         critic = self.velocity_critic if velocity else self.critic
         critic.requires_grad_(False)
@@ -318,7 +419,7 @@ class Learner:
         def flat(xs):
             return torch.stack(xs).flatten(0, 1)
 
-        S_all = tuple(flat([St[i] for St in Ss]) for i in range(6))
+        S_all = tuple(flat([St[i] for St in Ss]) for i in range(len(S)))
         f_all = flat(Fs)
         r, d = self.reward_termination(S_all, f_all, flat(As), flat(Aps), flat(commands) if velocity else None)
         r, d = (r.view(self.horizon, B), d.view(self.horizon, B))
@@ -338,7 +439,7 @@ class Learner:
         with torch.no_grad():
             S_c = tuple(
                 torch.cat((S0[i].unsqueeze(0), torch.stack([St[i].detach() for St in Ss])), 0).flatten(0, 1)
-                for i in range(6)
+                for i in range(len(S))
             )
             f_c = torch.cat((s["f"].unsqueeze(0), torch.stack(Fs)), 0).flatten()
             g_c = torch.cat((g0.unsqueeze(0), torch.stack(Gs)), 0).flatten(0, 1)

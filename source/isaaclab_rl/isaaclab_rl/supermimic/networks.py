@@ -22,7 +22,7 @@ CRITIC_EXTRA = 29 + 14 * 3 + 3 + 6 + XI_DIM
 
 def invariant_features(S) -> torch.Tensor:
     """Heading- and position-invariant state features: height, tilt (6D), body-frame velocities, joints."""
-    p, R, v, w, q, qd = S
+    p, R, v, w, q, qd = S[:6]
     H = yaw_mat(R)
     Rt = R.transpose(-1, -2)
     return torch.cat(
@@ -33,13 +33,14 @@ def invariant_features(S) -> torch.Tensor:
             (Rt @ w.unsqueeze(-1)).squeeze(-1),
             q,
             qd,
-        ),
+        )
+        + tuple(S[6:]),
         -1,
     )
 
 
 def normalize_xi(xi: torch.Tensor) -> torch.Tensor:
-    return torch.cat(((xi[..., :1] - 0.75) / 0.45, xi[..., 1:30] / 0.01, xi[..., 30:33] / 0.05), -1)
+    return torch.cat(((xi[..., :1] - 0.75) / 0.45, xi[..., 1:-3] / 0.01, xi[..., -3:] / 0.05), -1)
 
 
 def mlp(inp: int, hidden: list[int], out: int, act=nn.ELU, layer_norm: bool = False) -> nn.Sequential:
@@ -97,8 +98,8 @@ def run_network(net: nn.Module, x: torch.Tensor, dtype: torch.dtype | None) -> t
 
 def state_difference(S, S1):
     """Frame-local increments from S to S1 (the regression targets)."""
-    p, R, v, w, q, qd = S
-    p1, R1, v1, w1, q1, qd1 = S1
+    p, R, v, w, q, qd = S[:6]
+    p1, R1, v1, w1, q1, qd1 = S1[:6]
     H = yaw_mat(R)
     Rt = R.transpose(-1, -2)
     return torch.cat(
@@ -109,52 +110,109 @@ def state_difference(S, S1):
             (Rt @ (w1 - w).unsqueeze(-1)).squeeze(-1),
             q1 - q,
             qd1 - qd,
-        ),
+        )
+        + tuple(b - a for a, b in zip(S[6:], S1[6:], strict=True)),
         -1,
     )
+
+
+class LearnedMDP(nn.Module):
+    """State-conditioned observation and reward/termination heads for imagined rollouts.
+
+    Observations are standardized during fitting; rewards use the task's maximum per-step
+    reward. Termination is represented by a logit, independently of time-limit truncations.
+    """
+
+    def __init__(self, input_dim: int, obs_dim: int, action_dim: int, xi_dim: int, amp_dtype=None):
+        super().__init__()
+        self.amp_dtype = amp_dtype
+        self.in_norm = RunningNorm(input_dim)
+        self.obs_norm = RunningNorm(obs_dim)
+        self.observation = mlp(input_dim + action_dim + xi_dim, [256, 256], obs_dim, layer_norm=True)
+        self.outcome = mlp(input_dim + 2 * action_dim, [256, 256], 2, layer_norm=True)
+
+    def obs(self, features, action, xi_n):
+        x = torch.cat((self.in_norm(features), action, xi_n), -1)
+        return run_network(self.observation, x, self.amp_dtype) * self.obs_norm.std() + self.obs_norm.mean
+
+    def reward_termination(self, features, action, previous_action):
+        x = torch.cat((self.in_norm(features), action, previous_action), -1)
+        return run_network(self.outcome, x, self.amp_dtype).unbind(-1)
 
 
 class WorldModel(nn.Module):
     """Deterministic dynamics s_{t+1} = f(s_t, a_t, xi) predicting frame-local state increments."""
 
-    def __init__(self, hidden=(2048, 2048, 2048), amp_dtype=None, network: nn.Module | None = None):
+    def __init__(
+        self,
+        hidden=(2048, 2048, 2048),
+        amp_dtype=None,
+        network: nn.Module | None = None,
+        *,
+        num_joints: int = NUM_J,
+        auxiliary_dim: int = 0,
+    ):
         super().__init__()
         self.amp_dtype = amp_dtype
-        self.net = network if network is not None else mlp(WM_IN, list(hidden), WM_OUT, act=nn.SiLU, layer_norm=True)
+        self.heads: LearnedMDP | None = None
+        self.num_joints, self.auxiliary_dim = num_joints, auxiliary_dim
+        self.invariant_dim = 13 + 2 * num_joints + auxiliary_dim
+        self.input_dim = self.invariant_dim + num_joints + (num_joints + 4)
+        self.output_dim = 12 + 2 * num_joints + auxiliary_dim
+        self.net = (
+            network
+            if network is not None
+            else mlp(self.input_dim, list(hidden), self.output_dim, act=nn.SiLU, layer_norm=True)
+        )
         if network is None:
             nn.init.zeros_(self.net[-1].weight)
             nn.init.zeros_(self.net[-1].bias)
-        self.in_norm = RunningNorm(WM_IN)
-        self.out_norm = RunningNorm(WM_OUT, eps=1e-4)
+        self.in_norm = RunningNorm(self.input_dim)
+        self.out_norm = RunningNorm(self.output_dim, eps=1e-4)
+
+    def unpack(self, state):
+        from isaaclab_tasks.contrib.g1_tracking.tracking import unflatten_state
+
+        return unflatten_state(state, self.num_joints)
 
     def inputs(self, S, a, xi_n):
         return torch.cat((invariant_features(S), a, xi_n), -1)
 
     def step(self, S, a, xi_n):
-        p, R, v, w, q, qd = S
+        p, R, v, w, q, qd = S[:6]
         tokens = self.in_norm(self.inputs(S, a, xi_n)).unsqueeze(-2)
         y = run_network(self.net, tokens, self.amp_dtype).squeeze(-2)
         d = y * self.out_norm.std() + self.out_norm.mean
         H = yaw_mat(R)
-        dp, dth, dv, dw, dq, dqd = d.split((3, 3, 3, 3, NUM_J, NUM_J), -1)
+        core = 12 + 2 * self.num_joints
+        dp, dth, dv, dw, dq, dqd = d[..., :core].split((3, 3, 3, 3, self.num_joints, self.num_joints), -1)
         p1 = p + (H @ dp.unsqueeze(-1)).squeeze(-1)
         R1 = R @ so3_exp(dth)
         v1 = v + (R @ dv.unsqueeze(-1)).squeeze(-1)
         w1 = w + (R @ dw.unsqueeze(-1)).squeeze(-1)
-        return (p1, R1, v1, w1, q + dq, qd + dqd)
+        state = (p1, R1, v1, w1, q + dq, qd + dqd)
+        return state + (S[6] + d[..., core:],) if self.auxiliary_dim else state
 
 
 class Policy(nn.Module):
     """a = dec(enc(g), o_{t-9:t}); deterministic, latent z in R^32 bounded by tanh."""
 
     def __init__(
-        self, obs_dim: int, goal_dim: int, hist: int = 10, z_dim: int = 32, amp_dtype=None, velocity: bool = False
+        self,
+        obs_dim: int,
+        goal_dim: int,
+        hist: int = 10,
+        z_dim: int = 32,
+        amp_dtype=None,
+        velocity: bool = False,
+        *,
+        num_actions: int = NUM_J,
     ):
         super().__init__()
         self.hist = hist
         self.amp_dtype = amp_dtype
         self.enc = mlp(goal_dim, [2048, 1024, 512, 256], z_dim)
-        self.dec = mlp(z_dim + obs_dim * hist, [2048, 1024, 512, 256], NUM_J)
+        self.dec = mlp(z_dim + obs_dim * hist, [2048, 1024, 512, 256], num_actions)
         with torch.no_grad():
             self.dec[-1].weight.mul_(0.01)
             self.dec[-1].bias.zero_()
@@ -193,7 +251,7 @@ class Critic(nn.Module):
 def critic_features(mdp, S, f, xi) -> torch.Tensor:
     """Critic input: invariant state, goal, sim context, and robot-vs-reference errors."""
     m = mdp.motion
-    p, R, v, w, q, qd = S
+    p, R, v, w, q, qd = S[:6]
     H = yaw_mat(R)
     Ht = H.transpose(-1, -2)
     rp, rR = m.root_p[f], m.root_R[f]

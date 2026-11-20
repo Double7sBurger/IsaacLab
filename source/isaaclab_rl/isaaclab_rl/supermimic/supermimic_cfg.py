@@ -37,6 +37,8 @@ class SuperMimicCfg:
     learning_rate_decay_iterations: int = 250_000
     world_model: str = "mlp"
     """Dynamics architecture: ``mlp`` or ``nerd-one-frame`` (optional PhysicsNeMo Robotics)."""
+    mdp_heads: str = "analytic"
+    """Reward, noise-free observation and termination: ``analytic`` or jointly ``learned``."""
     amp: str = "bf16"
     """Neural projection precision: ``bf16`` or ``none``. Geometry always uses float32."""
     compile: bool = True

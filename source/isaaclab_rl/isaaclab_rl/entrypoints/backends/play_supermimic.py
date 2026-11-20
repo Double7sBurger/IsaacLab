@@ -22,7 +22,7 @@ from isaaclab.utils import update_from_dict
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.contrib.g1_tracking.g1_tracking_env_cfg import TransitionRecorderCfg
-from isaaclab_tasks.contrib.g1_tracking.tracking import MAX_REWARD_RATE, OBS_DIM, unflatten_state
+from isaaclab_tasks.contrib.g1_tracking.tracking import MAX_REWARD_RATE, unflatten_state
 from isaaclab_tasks.utils import resolve_task_config, setup_preset_cli
 
 from ...supermimic.networks import Policy
@@ -178,12 +178,14 @@ def run(argv: list[str]) -> None:
         env = create_isaaclab_env(task, env_cfg, args, convert_marl_to_single_agent=False)
         try:
             dtype = torch.bfloat16 if checkpoint["agent_cfg"]["amp"] == "bf16" else None
+            objective = env.unwrapped.command_manager.get_term("motion").mdp
             policy = Policy(
-                OBS_DIM,
-                73 * env_cfg.commands.motion.goal_frames,
+                objective.obs_dim,
+                objective.goal_dim * env_cfg.commands.motion.goal_frames,
                 hist=env_cfg.observations.policy.history_length,
                 amp_dtype=dtype,
                 velocity=trained_velocity,
+                num_actions=objective.num_joints,
             ).to(env.unwrapped.device)
             policy.load_state_dict(checkpoint["pi"])
             policy.eval()

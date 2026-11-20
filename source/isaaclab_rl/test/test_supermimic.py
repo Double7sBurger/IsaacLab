@@ -128,9 +128,8 @@ def test_replay_ring_masks_boundaries_and_owns_samples():
     torch.testing.assert_close(history["s"], start["s"][:, None].expand(-1, 10, -1))
 
 
-@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
-def test_joint_learning_routes_gradients_and_seeds_by_interface(tmp_path, device):
-    """Both actors/critics learn, while velocity gradients cannot update the decoder or motion encoder."""
+def _joint_learner(tmp_path, device, mdp_heads="analytic"):
+    """Build a small two-interface learner with physical replay and a rigid-body reference."""
     from types import SimpleNamespace
 
     from isaaclab_rl.supermimic.learner import Learner
@@ -170,6 +169,8 @@ def test_joint_learning_routes_gradients_and_seeds_by_interface(tmp_path, device
         "f": torch.zeros(8, dtype=torch.long, device=device),
         "ep_step": torch.zeros(8, dtype=torch.long, device=device),
         "done": torch.zeros(8, dtype=torch.bool, device=device),
+        "r": torch.full((8,), 0.06, device=device),
+        "term": torch.zeros(8, dtype=torch.bool, device=device),
         "is_velocity": torch.arange(8, device=device) >= 4,
         "velocity_command": torch.full((8, 3), 0.5, device=device),
         "velocity_reference": torch.ones(8, dtype=torch.bool, device=device),
@@ -186,6 +187,9 @@ def test_joint_learning_routes_gradients_and_seeds_by_interface(tmp_path, device
         critic_epochs=1,
         critic_minibatches=1,
         velocity_alignment_weight=0.0,
+        mdp_heads=mdp_heads,
+        world_model_window=2,
+        world_model_batch_size=8,
     )
     world = WorldModel(hidden=(32,)).to(device)
     torch.nn.init.normal_(world.net[-1].weight, std=0.01)
@@ -196,6 +200,22 @@ def test_joint_learning_routes_gradients_and_seeds_by_interface(tmp_path, device
         transition["f"].fill_(frame)
         transition["ep_step"].fill_(frame)
         learner.observe(transition)
+    return learner, transition
+
+
+@pytest.mark.parametrize("mdp_heads", ("analytic", "learned"))
+@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
+def test_joint_learning_routes_gradients_and_seeds_by_interface(tmp_path, device, mdp_heads, monkeypatch):
+    """Both actors/critics learn through frozen dynamics and optional heads, preserving interface routing."""
+    learner, _ = _joint_learner(tmp_path, device, mdp_heads)
+    cfg, world = learner.cfg, learner.wm
+    if mdp_heads == "learned":
+
+        def reject_analytic(*args, **kwargs):
+            raise AssertionError("Learned rollouts must use learned reward and termination.")
+
+        for name in ("reward", "soft_termination", "velocity_reward", "velocity_termination"):
+            monkeypatch.setattr(learner.mdp, name, reject_analytic)
     for velocity in (False, True):
         starts, _ = learner.buffer.sample_starts(64, 3, velocity)
         assert ((starts["s"][:, 0] >= 4) == velocity).all()
@@ -223,6 +243,41 @@ def test_joint_learning_routes_gradients_and_seeds_by_interface(tmp_path, device
         assert any(not torch.equal(p, old) for p, old in zip(model.parameters(), initial, strict=True))
     for parameter, initial in zip(world.parameters(), before[-1], strict=True):
         torch.testing.assert_close(parameter, initial, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device", test_devices(DeviceScope.CUDA))
+def test_learned_heads_fit_physical_labels_and_ignore_truncations(tmp_path, device):
+    """Replay boundaries mask later steps; a timeout must not become a positive failure label."""
+    learner, transition = _joint_learner(tmp_path, device, "learned")
+    heads = learner.wm.heads
+    with torch.no_grad():
+        for parameter in heads.outcome.parameters():
+            parameter.zero_()
+        heads.outcome[-1].bias[1] = 2.0
+    # Both interfaces have normalized reward 0.5, irrespective of their analytical reward.
+    transition["r"][:4] = 0.05
+    transition["r"][4:] = 0.03
+    transition["done"].fill_(True)
+    for frame in range(learner.cfg.buffer_steps):
+        transition["f"].fill_(frame)
+        transition["ep_step"].fill_(frame)
+        learner.observe(transition)
+    before = [parameter.detach().clone() for parameter in heads.parameters()]
+    loss, error = learner.wm_update()
+    assert torch.isfinite(loss) and torch.isfinite(error)
+    # Only the first of two autoregressive steps contributes. Hard failure labels remain zero.
+    torch.testing.assert_close(learner.head_losses[0], torch.tensor(0.125, device=device))
+    torch.testing.assert_close(
+        learner.head_losses[2], torch.nn.functional.softplus(torch.tensor(2.0, device=device)) / 2
+    )
+    assert any(not torch.equal(p, old) for p, old in zip(heads.parameters(), before, strict=True))
+    # Poison only the masked step, keeping the first transition's recorded reward unchanged.
+    window = learner.buffer.sample_windows(8, 2)
+    states = learner.rollout(window["s"], window["a"], window["xi"])
+    expected = learner.head_error(states, window)
+    window["r"][:, 1] = 10000
+    window["term"][:, 1] = True
+    torch.testing.assert_close(learner.head_error(states, window), expected)
 
 
 def test_evaluation_batches_cover_last_partial_batch_and_failed_tails():

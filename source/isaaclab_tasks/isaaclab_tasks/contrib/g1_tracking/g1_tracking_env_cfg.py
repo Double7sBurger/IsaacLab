@@ -141,9 +141,13 @@ class MotionCommandCfg(CommandTermCfg):
     class_type = "isaaclab_tasks.contrib.g1_tracking.mdp:MotionCommand"
     resampling_time_range = (1.0e9, 1.0e9)
     motion_dir: str = str(G1_DATA_DIR / "lafan1_g1")
-    """Directory containing metric/xyzw/radian 36-channel motion CSV or NumPy files."""
+    """Directory containing root XYZ, quaternion XYZW and joint-radian motion CSV or NumPy files."""
     kinematics_path: str = str(G1_DATA_DIR / "g1_description/g1_29dof.xml")
     """MJCF matching the scene asset, used for differentiable link kinematics."""
+    joint_names: list[str] | None = None
+    """Explicit motion column order for a non-G1 articulation; must match the native joint order."""
+    tracked_bodies: list[str] | None = None
+    context_body: str = "torso_link"
     source_fps: float = 30.0
     goal_frames: int = 10
     gamma: float = 0.99
