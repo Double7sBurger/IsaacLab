@@ -76,7 +76,10 @@ Local reuse records the local source and hashes, rather than claiming a download
 The task defaults to the same layout under ``<IsaacLab>/data/g1_tracking``; the examples below
 override those paths for an external data volume.
 
-For BONES-SEED, obtain the ``g1.tar.gz`` archive from the ``isaac/bones-seed-g1:1`` dataset and run:
+For BONES-SEED, download ``g1.tar.gz`` yourself from the official
+`Bones Studio dataset page <https://huggingface.co/datasets/bones-studio/seed>`_
+after accepting its license and obtaining access. This repository does not redistribute
+the dataset. See :doc:`/source/how-to/train_model_based` for the local data setup, then run:
 
 .. code-block:: bash
 

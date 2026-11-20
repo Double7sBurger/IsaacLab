@@ -14,6 +14,41 @@ critic learning, and the collection/update schedule. The
 reference goals, differentiable rewards, kinematics, physical context, and reset
 sampling. Train and play use the existing Isaac Lab entrypoints.
 
+Source attribution and licenses
+-------------------------------
+
+This backend is an adaptation of existing open-source work, not an independently
+invented learning algorithm. Its source boundaries are:
+
+* **Algorithm and reference task mathematics:**
+  ``HybridRobotics/SuperMimic`` at the revision linked above, under Apache-2.0.
+  Ported networks, replay, optimizers, learners, runner, and task mathematics retain
+  their upstream attribution and modification notices. The license is retained in
+  ``docs/licenses/dependencies/supermimic-official-license.txt``.
+* **Initial native integration:**
+  `Isaac Lab PR #8826 by ooctipus
+  <https://github.com/isaac-sim/IsaacLab/pull/8826>`_, at commit
+  ``b2de4e7c4702a1f5417c22e00ec71b9e4ba887cb``. Inherited SuperMimic portions retain
+  the ETH Zurich / Chong Zhang attribution and MIT license in
+  ``docs/licenses/dependencies/supermimic-license.txt``. Isaac Lab integration
+  code uses the repository's BSD-3-Clause license.
+* **Quaternion arithmetic:** the WXYZ helpers preserve the operation order of
+  the BSD-3-Clause, Isaac Lab-derived helpers in
+  `mjlab at revision 8ee51fbc
+  <https://github.com/mujocolab/mjlab/blob/8ee51fbcf806a7419189f706d9e394cbeb7790fa/src/mjlab/utils/lab_api/math.py>`_.
+* **Normalization utility:** networks reuse ``rsl_rl.modules.EmpiricalNormalization``;
+  see ``docs/licenses/dependencies/rsl_rl-license.txt``. The model-based learners
+  and runner are separate from the RSL-RL training backend.
+
+Native task interfaces, CLI wiring, distributed coordination, and tests adapt
+these components to Isaac Lab. Source-file notices identify the applicable
+license; the repository's top-level license does not replace third-party notices.
+
+Datasets and robot assets are external inputs with their own terms. Users must
+download them from their providers. See
+:doc:`/source/how-to/train_model_based` for download sources, local preparation,
+and runnable training commands.
+
 Reference behavior
 ------------------
 

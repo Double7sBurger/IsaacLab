@@ -256,6 +256,16 @@ How-to Guides
 
       .. container:: guide-entry
 
+         :doc:`Training model-based motion tracking </source/how-to/train_model_based>`
+
+         Download motion data from its provider, prepare local G1 inputs, and train or play a policy.
+
+         .. container:: guide-metadata
+
+            :guide-tag-newton:`Newton`
+
+      .. container:: guide-entry
+
          :doc:`Training MicroDuck </source/how-to/train_microduck>`
 
          Train flat or rough walking and scale its recipe for distributed training.
