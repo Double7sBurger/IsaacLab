@@ -3,29 +3,4 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""G1 reference-motion tracking with native environment managers."""
-
-import gymnasium as gym
-
-gym.register(
-    id="IsaacContrib-Motion-Tracking-G1",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.g1_tracking_env_cfg:G1TrackingEnvCfg",
-        "default_agent": "supermimic",
-        "supermimic_cfg_entry_point": "isaaclab_rl.supermimic.supermimic_cfg:SuperMimicCfg",
-    },
-)
-
-for robot in ("AnymalD", "Cassie", "UnitreeGo2", "H1"):
-    gym.register(
-        id=f"IsaacContrib-Motion-Tracking-{robot}",
-        entry_point="isaaclab.envs:ManagerBasedRLEnv",
-        disable_env_checker=True,
-        kwargs={
-            "env_cfg_entry_point": f"{__name__}.robot_tracking_env_cfg:{robot}TrackingEnvCfg",
-            "default_agent": "supermimic",
-            "supermimic_cfg_entry_point": "isaaclab_rl.supermimic.supermimic_cfg:SuperMimicCfg",
-        },
-    )
+"""Deprecated import path; use :mod:`isaaclab_tasks.contrib.motion_tracking`."""

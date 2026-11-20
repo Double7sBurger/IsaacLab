@@ -85,7 +85,7 @@ available and have enough free memory.
 Choose an RL library
 ~~~~~~~~~~~~~~~~~~~~
 
-Multi-GPU training supports RSL-RL, RL-Games, and skrl. RSL-RL is the default
+Multi-GPU training supports RSL-RL, RL-Games, skrl, and model-based learning. RSL-RL is the default
 for most core tasks.
 
 .. list-table::
@@ -107,6 +107,9 @@ for most core tasks.
    * - skrl
      - JAX
      - ``uv run --extra skrl-jax isaaclab train_multigpu --rl_library skrl --ml_framework jax ...``
+   * - Model-based
+     - PyTorch
+     - ``uv run isaaclab train_multigpu --rl_library model_based ...``
 
 skrl with JAX uses skrl's distributed launcher instead of ``torchrun``. Pass an
 integer ``--num_gpus`` and use ``--coordinator_address`` to configure its
