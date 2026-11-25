@@ -11,7 +11,7 @@ import csv
 import hashlib
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -201,8 +201,49 @@ class MotionLoader:
     ``sha256``. Loaded quaternions use Isaac Lab's XYZW convention.
     """
 
-    def __init__(self, motion_file: str, body_names: Sequence[str], joint_names: Sequence[str], device: str):
-        path = Path(retrieve_file_path(motion_file))
+    def __init__(
+        self,
+        motion_file: str,
+        body_names: Sequence[str],
+        joint_names: Sequence[str],
+        device: str,
+        *,
+        forward_kinematics: Callable | None = None,
+        source_fps: float = 30.0,
+        target_fps: float = 50.0,
+        csv: CsvMotionCfg | None = None,
+    ):
+        path = Path(motion_file)
+        if not path.is_dir():
+            path = Path(retrieve_file_path(motion_file))
+        pose_only = path.is_dir() or path.suffix != ".npz"
+        if not pose_only:
+            with np.load(path, allow_pickle=False) as data:
+                pose_only = "body_pos_w" not in data
+        if pose_only:
+            if forward_kinematics is None:
+                raise ValueError("Root/joint reference inputs require a forward_kinematics callback.")
+            motion = MotionLibrary(
+                str(path), joint_names, source_fps=source_fps, target_fps=target_fps, csv=csv, device=device
+            )
+            self.__dict__.update(vars(motion))
+            self.fps = target_fps
+            state = (
+                motion.root_pos_w,
+                motion.root_quat_w,
+                motion.root_lin_vel_w,
+                motion.root_ang_vel_w,
+                motion.joint_pos,
+                motion.joint_vel,
+            )
+            with torch.no_grad():
+                chunks = [
+                    forward_kinematics(tuple(value[i : i + 4096] for value in state))
+                    for i in range(0, motion.time_step_total, 4096)
+                ]
+            for name, values in zip(("body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w"), zip(*chunks)):
+                setattr(self, name, torch.cat(values))
+            return
         with np.load(path, allow_pickle=False) as data:
             if "body_names" in data and "joint_names" in data:
                 names = {key: data[key].tolist() for key in ("body_names", "joint_names")}
@@ -244,6 +285,17 @@ class MotionLoader:
             self.body_quat_w: torch.Tensor = arrays["body_quat_w"]
             self.body_lin_vel_w: torch.Tensor = arrays["body_lin_vel_w"]
             self.body_ang_vel_w: torch.Tensor = arrays["body_ang_vel_w"]
+            self.motion_starts = torch.zeros(1, dtype=torch.long, device=device)
+            self.motion_ends = torch.tensor([self.time_step_total], device=device)
+            self.names = [path.stem]
+            self.root_pos_w = self.body_pos_w[:, 0]
+            self.root_quat_w = self.body_quat_w[:, 0]
+            self.root_lin_vel_w = self.body_lin_vel_w[:, 0]
+            self.root_ang_vel_w = self.body_ang_vel_w[:, 0]
+
+    def clip_end(self, frames: torch.Tensor) -> torch.Tensor:
+        """Exclusive clip end for each frame, without crossing concatenated clip boundaries."""
+        return self.motion_ends[torch.searchsorted(self.motion_ends, frames.contiguous(), right=True)]
 
 
 def _load_pose_motion(
@@ -286,6 +338,8 @@ class MotionLibrary:
     velocities are estimated within each clip, never across clip boundaries.
     Stored root quaternions use Isaac Lab's XYZW convention. NPZ files must
     already match ``target_fps`` (50 Hz when their ``fps`` field is omitted).
+    Named NPZ joints are reordered to ``joint_names``; unnamed NPZ arrays must
+    already use that order.
     """
 
     def __init__(
@@ -302,7 +356,9 @@ class MotionLibrary:
     ):
         if not all(np.isfinite(rate) and rate > 0 for rate in (source_fps, target_fps)):
             raise ValueError("Motion frame rates must be finite and positive.")
-        names = joint_names
+        names = list(joint_names)
+        if len(set(names)) != len(names):
+            raise ValueError("Target joint names must be unique.")
         self.device = device
         path = Path(motion_dir)
         directory = path.parent if path.is_file() else path
@@ -326,6 +382,19 @@ class MotionLibrary:
             if path.suffix == ".npz":
                 with np.load(path, allow_pickle=False) as data:
                     clip = {key: torch.as_tensor(data[key], dtype=torch.float32, device=device) for key in fields}
+                    if "joint_names" in data:
+                        source_names = data["joint_names"].tolist()
+                        if (
+                            data["joint_names"].ndim != 1
+                            or len(set(source_names)) != len(source_names)
+                            or set(source_names) != set(names)
+                        ):
+                            raise ValueError(f"Reference joint names must match the target joints in {path}.")
+                        indices = [source_names.index(name) for name in names]
+                        for key in ("joint_pos", "joint_vel"):
+                            if clip[key].ndim != 2 or clip[key].shape[1] != len(source_names):
+                                raise ValueError(f"Invalid {key} layout in {path}.")
+                            clip[key] = clip[key][:, indices]
                     if (float(data["fps"]) if "fps" in data else 50.0) != target_fps:
                         raise ValueError(f"Reference clip {path} must be sampled at {target_fps} Hz.")
             else:
@@ -341,6 +410,9 @@ class MotionLibrary:
                 raise ValueError(f"Invalid reference layout in {path}.")
             if any(not torch.isfinite(value).all() for value in clip.values()):
                 raise ValueError(f"Nonfinite reference in {path}.")
+            norms = clip["root_quat_w"].norm(dim=-1)
+            if not torch.allclose(norms, torch.ones_like(norms), atol=1e-3, rtol=0):
+                raise ValueError(f"Non-unit root quaternions in {path}.")
             if path.suffix == ".npz":
                 clip["root_quat_w"] = clip["root_quat_w"][:, [1, 2, 3, 0]]
             clips.append(clip)
